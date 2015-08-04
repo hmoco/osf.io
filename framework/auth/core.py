@@ -344,6 +344,8 @@ class User(GuidStoredObject, AddonModelMixin):
     #     'twitter': <twitter id>,
     # }
 
+    blog_guid = fields.StringField()
+
     # hashed password used to authenticate to Piwik
     piwik_token = fields.StringField()
 

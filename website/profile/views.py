@@ -24,7 +24,7 @@ from framework.status import push_status_message
 from website import mails
 from website import mailchimp_utils
 from website import settings
-from website.models import User
+from website.models import User, Node
 from website.profile import utils as profile_utils
 from website.util import web_url_for, paths
 from website.util.sanitize import escape_html

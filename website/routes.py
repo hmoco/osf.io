@@ -32,6 +32,7 @@ from website.citations import views as citation_views
 from website.search import views as search_views
 from website.oauth import views as oauth_views
 from website.profile import views as profile_views
+from website.blog import views as blog_views
 from website.project import views as project_views
 from website.addons.base import views as addon_views
 from website.discovery import views as discovery_views
@@ -144,7 +145,7 @@ def make_url_map(app):
         Rule(
             [
                 '/<guid>/',
-                '/<guid>/<path:suffix>',
+                '/<guid>/<path:suffix>/',
             ],
             ['get', 'post', 'put', 'patch', 'delete'],
             website_views.resolve_guid,
@@ -154,7 +155,7 @@ def make_url_map(app):
         Rule(
             [
                 '/api/v1/<guid>/',
-                '/api/v1/<guid>/<path:suffix>',
+                '/api/v1/<guid>/<path:suffix>/',
             ],
             ['get', 'post', 'put', 'patch', 'delete'],
             website_views.resolve_guid,
@@ -478,6 +479,17 @@ def make_url_map(app):
 
     ])
 
+    ### Blog ###
+
+    process_rules(app, [
+        Rule(['/profile/<guid>/blog/<int>/', '/project/<guid>/blog/<int>/', '/profile/<guid>/blog/', '/project/<guid>/blog/'], 'get', blog_views.blog_view,
+            OsfWebRenderer('blog.mako')),
+        Rule(['/profile/<guid>/blog/post/<path:bid>/', '/project/<guid>/blog/post/<path:bid>/'], 'get', blog_views.post_view,
+             OsfWebRenderer('post.mako')),
+        Rule(['/profile/<guid>/blog/new/', '/project/<guid>/blog/new/', '/profile/<guid>/blog/edit/<path:bid>/', '/project/<guid>/blog/edit/<path:bid>/'], 'get', blog_views.edit_or_create_post,
+             OsfWebRenderer('edit_post.mako'))
+    ])
+
     ### Profile ###
 
     # Web
@@ -690,7 +702,6 @@ def make_url_map(app):
             profile_views.unserialize_schools,
             json_renderer
         ),
-
     ], prefix='/api/v1',)
 
     ### Search ###
@@ -1417,6 +1428,16 @@ def make_url_map(app):
             ],
             'post',
             project_views.node.configure_comments,
+            json_renderer,
+        ),
+
+        Rule(
+            [
+                '/project/<pid>/settings/blog/',
+                '/project/<pid>/node/<nid>/settings/blog/',
+            ],
+            'post',
+            project_views.node.blog_settings,
             json_renderer,
         ),
 
