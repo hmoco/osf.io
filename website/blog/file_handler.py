@@ -12,8 +12,8 @@ class FileHandler:
 
 
     def get_file_list(self):
-        path = list(OsfStorageNodeSettings.find(Q("owner", "eq", self.node._id)))[0].root_node._id
-        dir = list(OsfStorageFileNode.find(Q("parent", "eq", path) & Q("name", "eq", "Blog")))[0]._id
+        path = OsfStorageNodeSettings.find_one(Q("owner", "eq", self.node._id)).root_node._id
+        dir = OsfStorageFileNode.find_one(Q('parent', 'eq', path) & Q('is_blog', 'eq', True))._id
         set = list(OsfStorageFileNode.find(Q("parent", "eq", dir)))
         return set
 

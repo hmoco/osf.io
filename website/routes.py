@@ -1441,6 +1441,15 @@ def make_url_map(app):
             json_renderer,
         ),
 
+        Rule(
+            [
+                '/project/<pid>/create_blog/'
+            ],
+            'post',
+            project_views.node.create_blog,
+            json_renderer,
+        ),
+
         # Invite Users
         Rule(
             [

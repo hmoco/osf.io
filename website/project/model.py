@@ -2019,7 +2019,33 @@ class Node(GuidStoredObject, AddonModelMixin, IdentifierMixin):
 
     @property
     def blog_theme(self):
+        if not self.blog.get('theme'):
+            return False
         return 'website/static/ghost_themes/' + self.blog['theme']
+
+    def create_blog(self, theme, description, title, logo, cover, navigation, path):
+        #this shouldnt be here
+        from website.addons.osfstorage.model import OsfStorageFileNode
+        node = OsfStorageFileNode.find_one(
+            Q('_id', 'eq', path)
+        )
+        if not node.node_settings.blog:
+            self.blog = {
+                'theme': theme,
+                'description': description,
+                'title': title,
+                'logo': logo,
+                'cover': cover,
+                'navigation': navigation,
+                'path': path
+            }
+            self.save()
+            node.is_blog = True
+            node.node_settings.blog = node
+            node.node_settings.save()
+            node.save()
+            return True
+        return False
 
     def add_addon(self, addon_name, auth, log=True, *args, **kwargs):
         """Add an add-on to the node. Do nothing if the addon is already

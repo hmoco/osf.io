@@ -362,6 +362,26 @@ def blog_settings(node, **kwargs):
         node.blog[key] = value
     node.save()
 
+@must_be_valid_project
+@collect_auth
+@must_have_permission(ADMIN)
+def create_blog(node, auth, **kwargs):
+    res = request.json
+    blog_id = res['path'].strip('/')
+    worked = node.create_blog(
+        theme=res.get('theme') or 'no_theme',
+        title=res.get('title') or 'no_title',
+        description=res.get('description') or 'no_description',
+        logo=res.get('logo') or 0,
+        cover=res.get('cover') or 0,
+        navigation=res.get('navigation') or 0,
+        path=blog_id
+    )
+    if worked:
+        return {'status': 'success'}
+    return {'status': 'failure'}
+
+
 
 ##############################################################################
 # View Project

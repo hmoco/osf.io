@@ -27,6 +27,7 @@ class OsfStorageNodeSettings(StorageAddonBase, AddonNodeSettingsBase):
     complete = True
     has_auth = True
 
+    blog = fields.ForeignField('OsfStorageFileNode')
     root_node = fields.ForeignField('OsfStorageFileNode')
     file_tree = fields.ForeignField('OsfStorageFileTree')
 
@@ -128,6 +129,7 @@ class OsfStorageFileNode(StoredObject):
 
     _id = fields.StringField(primary=True, default=lambda: str(bson.ObjectId()))
 
+    is_blog = fields.BooleanField(default=False)
     is_deleted = fields.BooleanField(default=False)
     name = fields.StringField(required=True, index=True)
     kind = fields.StringField(required=True, index=True)

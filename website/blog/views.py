@@ -51,6 +51,8 @@ def post_view(guid, bid):
 def render(guid, file=None, page=None):
     node = Node.load(guid)
     theme = node.blog_theme
+    if not theme:
+        return 'there is no blog here you poop face'
     blog_dict = node.blog_dict()
     renderer = Renderer(theme)
     if file is not None:

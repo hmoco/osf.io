@@ -1469,6 +1469,31 @@ var FGItemButtons = {
                     }, 'Delete Folder'));
             }
         }
+        if (item.kind === 'folder' && item.data.permissions.edit){
+            rowButtons.push(
+                m.component(FGButton, {
+                    onclick: function() {
+                        $osf.postJSON(
+                            item.data.nodeApiUrl+ 'create_blog/',
+                            {
+                                'path': item.data.path,
+                                'theme': 'casper',
+                                'title': 'Poop',
+                                'description': 'this+is+a+test'
+                            }
+                        ).done(function(res){
+                            if (res.status === 'success'){
+                                $osf.growl('YES');
+                            } else {
+                                $osf.growl('FUCk');
+                            }
+                        })
+                    },
+                    icon: 'fa fa-hand-spock-o',
+                    className: 'text-primary'
+                }, 'Create Blog')
+            );
+        }
         if (item.kind === 'file'){
             rowButtons.push(
                 m.component(FGButton, {
