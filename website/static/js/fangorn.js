@@ -1489,9 +1489,21 @@ var FGItemButtons = {
                             }
                         })
                     },
-                    icon: 'fa fa-hand-spock-o',
+                    icon: 'fa fa-rebel',
                     className: 'text-primary'
                 }, 'Create Blog')
+            );
+        }
+        
+        if (item.kind === 'folder' && item.data.permissions.edit){
+            rowButtons.push(
+                m.component(FGButton, {
+                    onclick: function() {
+                        window.location = window.location.origin + '/' + item.data.nodeId + '/blog/new/'
+                    },
+                    icon: 'fa fa-ge',
+                    className: 'text-primary'
+                }, 'Create Blog Post')
             );
         }
         if (item.kind === 'file'){
