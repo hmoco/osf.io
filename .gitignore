@@ -90,6 +90,7 @@ src/
 website/mfrtemp/
 docs/_build
 website/static/img/badges
+website/static/ghost_themes
 
 # GUIDS
 scripts/guid_blacklist.txt
