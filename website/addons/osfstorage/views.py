@@ -140,8 +140,6 @@ def osfstorage_create_child(file_node, payload, node_addon, **kwargs):
 
     try:
         if is_folder:
-            if file_node.is_blog:
-                raise HTTPError(httplib.FORBIDDEN)
             created, file_node = True, parent.append_folder(name)
         else:
             created, file_node = True, parent.append_file(name)
