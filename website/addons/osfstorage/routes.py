@@ -1,6 +1,6 @@
 # encoding: utf-8
 
-from framework.routing import Rule, json_renderer
+from framework.routing import Rule, json_renderer, WebRenderer
 
 from website.addons.osfstorage import views
 
@@ -112,6 +112,15 @@ api_routes = {
             views.osfstorage_copy_hook,
             json_renderer,
         ),
+
+        Rule(
+            [
+                '/project/<pid>/static/<fid>/',
+            ],
+            'get',
+            views.osfstorage_do_nothing,
+            WebRenderer(),
+       ),
     ],
 
 }

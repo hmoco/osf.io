@@ -223,3 +223,7 @@ def osfstorage_download(file_node, payload, node_addon, **kwargs):
             osf_storage_settings.WATERBUTLER_RESOURCE: version.location[osf_storage_settings.WATERBUTLER_RESOURCE],
         },
     }
+
+@decorators.autoload_filenode(must_be='file')
+def osfstorage_do_nothing(file_node, **kwargs):
+    return file_node
