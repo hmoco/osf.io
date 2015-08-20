@@ -990,6 +990,14 @@ def make_url_map(app):
             addon_views.addon_view_or_download_file_legacy,
             json_renderer
         ),
+        Rule(
+          [
+              '/api/v1/project/<pid>/new_home/',
+          ],
+            'post',
+            project_views.node.new_home,
+            json_renderer
+        ),
 
 
 

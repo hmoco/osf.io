@@ -59,7 +59,20 @@ $(document).ready(function() {
     $('#deleteNode').on('click', function() {
         ProjectSettings.getConfirmationCode(ctx.node.nodeType);
     });
-
+    $('#home_btn').on('click', function() {
+        $osf.postJSON(
+            '/api/v1/project/' + ctx.node.id + '/new_home/',
+            {home: $('#home_address').val()}
+        ).done(function(resp) {
+            if (resp.status === 'success') {
+                $osf.growl('You\'ve changed the home',{ type: 'success' });
+            } else {
+                $osf.growl('Error', 'New home path not valid');
+            }
+        }).fail(function(resp) {
+            $osf.growl('Error', 'Unable to change home');
+       });
+    });
     // TODO: Knockout-ify me
     $('#commentSettings').on('submit', function() {
         var $commentMsg = $('#configureCommentingMessage');

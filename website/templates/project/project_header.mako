@@ -29,7 +29,7 @@
                         % endif
 
                     % endif
-                        <li><a href="${node['url']}"  class="project-title"> ${ node['title'] }  </a></li>
+                        <li><a href="${node['url'] + 'dashboard/'}"  class="project-title"> ${ node['title'] }  </a></li>
 
                     % if not node['is_retracted']:
                         <li id="projectNavFiles"><a href="${node['url']}files/">Files</a></li>

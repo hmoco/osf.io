@@ -105,6 +105,14 @@
                             </div>
                             <button id="deleteNode" class="btn btn-danger btn-delete-node">Delete ${node['node_type']}</button>
                         </div>
+                        <hr />
+                        <div class="panel-body">
+                            <div class="help-block">
+                                Change this projects home:
+                            </div>
+                            <input id="home_address">
+                            <button class="btn btn-sm btn-warning" id="home_btn">Change Home</button>
+                        </div>
                     % endif
 
                 </div>

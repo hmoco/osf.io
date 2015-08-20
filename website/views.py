@@ -356,7 +356,15 @@ def resolve_guid(guid, suffix=None):
             raise HTTPError(http.NOT_FOUND)
         if not referent.deep_url:
             raise HTTPError(http.NOT_FOUND)
-        url = _build_guid_url(referent.deep_url, suffix)
+        if suffix:
+            if 'dashboard' in suffix:
+                url = _build_guid_url(referent.deep_url, None)
+            else:
+                url = _build_guid_url(referent.deep_url, suffix)
+        elif referent.home is not None:
+            url = _build_guid_url(referent.deep_url, referent.home)
+        else:
+            url = _build_guid_url(referent.deep_url, None)
         return proxy_url(url)
 
     # GUID not found; try lower-cased and redirect if exists

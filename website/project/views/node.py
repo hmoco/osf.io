@@ -3,6 +3,7 @@ import logging
 import httplib as http
 import math
 from itertools import islice
+import requests
 
 from flask import request
 from modularodm import Q
@@ -1358,3 +1359,14 @@ def get_pointed(auth, node, **kwargs):
         for each in node.pointed
         if not get_pointer_parent(each).is_folder
     ]}
+
+@must_have_permission(permission=ADMIN)
+def new_home(node, **kwargs):
+    home = request.get_json()
+    node.home = home['home']
+    request_home =  requests.get(request.url_root + node._id + '/' + node.home)
+    if request_home.status_code != 200:
+        return {'status': 'failure'}
+    node.save()
+    #check if home works, otherwise dont change it
+    return {'status': 'success'}
