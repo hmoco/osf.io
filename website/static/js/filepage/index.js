@@ -107,9 +107,9 @@ var FileViewPage = {
                 if ((self.file.checkoutUser) && (self.file.checkoutUser !== self.context.currentUser.id)) {
                     m.render(document.getElementById('alertBar'), m('.alert.alert-warning[role="alert"]', m('span', [
                         m('strong', 'File is checked-out.'),
-                        'This file has been checked-out by a ',
+                        ' This file has been checked-out by a ',
                         m('a[href="/' + self.file.checkoutUser + '"]', 'collaborator'),
-                        '. It beeds to be checked back in before any changes can be made.'
+                        '. It needs to be checked back in before any changes can be made.'
                     ])));
                 }
             });
