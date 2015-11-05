@@ -17,12 +17,11 @@ $(function() {
         interactive: window.contextVars.currentUser.canEdit,
         maxChars: 128,
         onAddTag: function (tag) {
-            var url = tagUrl;
-            var request = $osf.postJSON(url, {'tag': tag });
+            var request = $osf.postJSON(tagUrl, {'tag': tag });
             request.fail(function (xhr, textStatus, error) {
                 $osf.growl('Error', 'Could not add tag.');
                 Raven.captureMessage('Failed to add tag', {
-                    tag: tag, url: url, textStatus: textStatus, error: error
+                    tag: tag, url: tagUrl, textStatus: textStatus, error: error
                 });
             });
         },
@@ -31,7 +30,7 @@ $(function() {
             request.fail(function (xhr, textStatus, error) {
                 $osf.growl('Error', 'Could not remove tag.');
                 Raven.captureMessage('Failed to remove tag', {
-                    tag: tag, url: url, textStatus: textStatus, error: error
+                    tag: tag, url: tagUrl, textStatus: textStatus, error: error
                 });
             });
         }
