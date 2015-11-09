@@ -255,6 +255,16 @@
 
     <div class="col-sm-6 osf-dash-col">
 
+         <div class="citations panel panel-default">
+            <div class="panel-heading clearfix">
+                <h3 class="panel-title">Yo</h3>
+            </div>
+            <div class="panel-body">
+         <br><input type="image" src="/static/img/yo-button-700.png" name="YO"><br>
+             </div>
+         </div>
+
+
         <!-- Citations -->
         % if not node['anonymous']:
 
@@ -311,6 +321,7 @@
 </div>
 
 <%def name="children()">
+
 % if ('write' in user['permissions'] and not node['is_registration']) or node['children']:
     <div class="components panel panel-default">
         <div class="panel-heading clearfix">
