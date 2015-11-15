@@ -281,7 +281,13 @@ var ProjectViewModel = function(data) {
     };
 
     self.makePrivate = function() {
+                console.log('doodoo');
+
         return setPermissions(PRIVATE, self.nodeType);
+    };
+
+    self.yo = function() {
+        console.log('Yo');
     };
 
     self.forkNode = function() {

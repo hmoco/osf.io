@@ -20,7 +20,8 @@ var socialRules = {
     twitter: /twitter\.com\/(\w+)/i,
     linkedIn: /.*\/?(in\/.*|profile\/.*|pub\/.*)/i,
     impactStory: /impactstory\.org\/([\w\.-]+)/i,
-    github: /github\.com\/(\w+)/i
+    github: /github\.com\/(\w+)/i,
+    yo: /yo\.com\/(\w+)/i
 };
 
 var cleanByRule = function(rule) {
@@ -537,6 +538,11 @@ var SocialViewModel = function(urls, modes) {
         self, 'github', 'https://github.com/'
     );
 
+    self.yo = extendLink(
+        ko.observable().extend({trimmed: true, cleanup: cleanByRule(socialRules.yo)}),
+        self, 'yo', 'https://yo.com/'
+    );
+
     self.trackedProperties = [
         self.profileWebsites,
         self.orcid,
@@ -545,7 +551,8 @@ var SocialViewModel = function(urls, modes) {
         self.scholar,
         self.linkedIn,
         self.impactStory,
-        self.github
+        self.github,
+        self.yo
     ];
 
     var validated = ko.validatedObservable(self);
@@ -560,6 +567,7 @@ var SocialViewModel = function(urls, modes) {
             {label: 'ResearcherID', text: self.researcherId(), value: self.researcherId.url()},
             {label: 'Twitter', text: self.twitter(), value: self.twitter.url()},
             {label: 'GitHub', text: self.github(), value: self.github.url()},
+            {label: 'Yo', text: self.yo(), value: self.yo.url()},
             {label: 'LinkedIn', text: self.linkedIn(), value: self.linkedIn.url()},
             {label: 'ImpactStory', text: self.impactStory(), value: self.impactStory.url()},
             {label: 'Google Scholar', text: self.scholar(), value: self.scholar.url()}
@@ -621,6 +629,7 @@ $.extend(SocialViewModel.prototype, SerializeMixin.prototype, TrackedMixin.proto
 
 SocialViewModel.prototype.serialize = function() {
     var serializedData = ko.toJS(this);
+    debugger;
     var profileWebsites = serializedData.profileWebsites;
     serializedData.profileWebsites = profileWebsites.filter(
         function (value) {
@@ -633,6 +642,7 @@ SocialViewModel.prototype.serialize = function() {
 SocialViewModel.prototype.unserialize = function(data) {
     var self = this;
     var websiteValue = [];
+    debugger;
     $.each(data || {}, function(key, value) {
         if (ko.isObservable(self[key]) && key === 'profileWebsites') {
             if (value && value.length === 0) {

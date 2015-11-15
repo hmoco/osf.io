@@ -3,7 +3,14 @@
     <div data-bind="if: mode() === 'edit'">
 
         <form role="form" data-bind="submit: submit">
-
+{{ko.toJSON($data)}}
+            <div class="form-group">
+                <label>Yo</label>
+                <div class="input-group">
+                <span class="input-group-addon">@</span>
+                <input class="form-control" data-bind="value: yo" placeholder="yo"/>
+                </div>
+            </div>
             <label>Your websites</label>
             <div data-bind="sortable: {
                         data: profileWebsites,

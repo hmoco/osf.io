@@ -42,6 +42,7 @@
                         <button class="btn btn-default disabled">Public</button>
                     % endif
                     </div>
+
                     <!-- ko if: canBeOrganized -->
                     <div class="btn-group" style="display: none;" data-bind="visible: true">
 
@@ -260,7 +261,7 @@
                 <h3 class="panel-title">Yo</h3>
             </div>
             <div class="panel-body">
-         <br><input type="image" src="/static/img/yo-button-700.png" name="YO"><br>
+                <input type="image" data-bind="click: yo" src="/static/img/yo-button-723x390.png" align="center" name="YO" />
              </div>
          </div>
 
