@@ -1,8 +1,7 @@
 <%inherit file="base.mako"/>
 <%def name="title()">Home</%def>
 <%def name="content()">
-    <h1>Placeholder</h1>
-    <div id="recentActivityWidget"></div>
+    <div id="recentActivityWidget" class="row"></div>
 </%def>
 
 <%def name="stylesheets()">

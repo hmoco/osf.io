@@ -1,0 +1,13 @@
+/*
+ *  CSS For home page after login, home page before login is home-page.css
+ */
+
+#recentActivityWidget {
+    width: 90%;
+    margin-left: 5%;
+}
+
+#recentActivitySlider .progress-bar {
+    background-color: #214762;
+    width: 100%;
+}

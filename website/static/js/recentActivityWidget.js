@@ -120,7 +120,7 @@ var LogWrap = {
         var values = [(Number(ctrl.dateBegin.format('x'))/div | 0), (Number(ctrl.dateEnd.format('x'))/div | 0)];
         var makeSliderProgress =  function(){
             return '<div id="fillerBar" class="progress" style="height: 11px">' +
-                        '<div class="progress-bar" style="width:100%; background-color:#00022c;"></div>' + //need right color for this
+                        '<div class="progress-bar"></div>' + //need right color for this
                 '</div>';
         };
         var makeLine = function(canvas){
@@ -229,10 +229,7 @@ var LogWrap = {
                 ]);
             }
         };
-        return m('.panel.panel-default', [
-            m('.panel-heading', 'Recent Activity'),
-            m('.panel-body',
-            m('.fb-activity-list.m-t-md', [
+        return m('.fb-activity-list.col-md-8.col-md-offset-2.m-t-xl', [
                 m('.time-slider-parent',
                     m('#recentActivitySlider',  {config: addSlider})
                 ),
@@ -293,8 +290,7 @@ var LogWrap = {
                     }))
                 ]) : m('.spinner-loading-wrapper', [m('.logo-spin.logo-lg'), m('p.m-t-sm.fg-load-message', 'Loading logs...')]), m('br'),
                 !ctrl.loading ? m('p.text-center', ctrl.page + ' of ' + ctrl.lastPage) : '',
-            ]))
-        ]);
+            ]);
     }
 };
 
