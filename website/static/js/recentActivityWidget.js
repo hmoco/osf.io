@@ -26,6 +26,7 @@ var LogWrap = {
         self.cache = [];
         self.loading = false;
         self.div = 8.64e+7;
+        self.canvasHeight = 40;
 
         self.getLogs = function(init, reset, update) {
             if (!(init || reset || update)  && self.cache[self.page - 1]){
@@ -132,15 +133,15 @@ var LogWrap = {
             var rightHandle = handle[1];
             ctx.beginPath();
             ctx.moveTo(leftHandle.offsetLeft + handle.width(), 0);
-            ctx.lineTo(progBar.offset().left - $('#rACanvas').offset().left, 50);
+            ctx.lineTo(progBar.offset().left - $('#rACanvas').offset().left, ctrl.canvasHeight);
             ctx.strokeStyle = '#E0E0E0 ';
-            ctx.lineWidth = 4;
+            ctx.lineWidth = 1;
             ctx.stroke();
             ctx.beginPath();
             ctx.moveTo(rightHandle.offsetLeft + handle.width(), 0);
-            ctx.lineTo(progBar.offset().left + progBar[0].offsetWidth - $('#rACanvas').offset().left, 50);
+            ctx.lineTo(progBar.offset().left + progBar[0].offsetWidth - $('#rACanvas').offset().left, ctrl.canvasHeight);
             ctx.strokeStyle = '#E0E0E0 ';
-            ctx.lineWidth = 4;
+            ctx.lineWidth = 1;
             ctx.stroke();
         };
         var addSlider = function(ele, isInitialized){
@@ -233,7 +234,11 @@ var LogWrap = {
                 m('.time-slider-parent',
                     m('#recentActivitySlider',  {config: addSlider})
                 ),
-                m('canvas#rACanvas[width="' + $('#recentActivitySlider').width() + '"][height="50px"]', {style:{verticalAlign: 'middle'}}),
+                m('canvas#rACanvas', {
+                    style: {verticalAlign: 'middle'},
+                    width: $('#recentActivitySlider').width(),
+                    height: ctrl.canvasHeight
+                }),
                 m('.row', [
                     m('.col-xs-1'),
                     m('.col-xs-10',
