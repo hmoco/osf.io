@@ -132,16 +132,16 @@ var LogWrap = {
             var leftHandle = handle[0];
             var rightHandle = handle[1];
             ctx.beginPath();
-            ctx.moveTo(leftHandle.offsetLeft + handle.width(), 0);
+            ctx.moveTo(leftHandle.offsetLeft + (handle.width()/2), 0);
             ctx.lineTo(progBar.offset().left - $('#rACanvas').offset().left, ctrl.canvasHeight);
             ctx.strokeStyle = '#E0E0E0 ';
-            ctx.lineWidth = 1;
+            ctx.lineWidth = 2;
             ctx.stroke();
             ctx.beginPath();
-            ctx.moveTo(rightHandle.offsetLeft + handle.width(), 0);
+            ctx.moveTo(rightHandle.offsetLeft + (handle.width()/2), 0);
             ctx.lineTo(progBar.offset().left + progBar[0].offsetWidth - $('#rACanvas').offset().left, ctrl.canvasHeight);
             ctx.strokeStyle = '#E0E0E0 ';
-            ctx.lineWidth = 1;
+            ctx.lineWidth = 2;
             ctx.stroke();
         };
         var addSlider = function(ele, isInitialized){
