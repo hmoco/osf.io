@@ -1,3 +1,29 @@
+
+
+#recentActivityWidget {
+    width: 90%;
+    margin-left: 5%;
+}
+
+#recentActivitySlider .progress-bar {
+    background-color: #214762;
+    width: 100%;
+}
+
+/*  Override  slider */
+.ui-slider .ui-slider-handle {
+    width: 20px;
+    height: 20px;
+    border-radius: 10px;
+    border: 1px solid #eee;
+    box-shadow: 0 1px 1px #999;
+    background-image: -webkit-linear-gradient(top, #f4f4f4 0%, #e5e5e5 100%);
+    background-image: linear-gradient(to bottom, #f4f4f4 0%, #e5e5e5 100%);
+}
+#recentActivitySlider.ui-slider {
+    border: none;
+    background: #E4E3E3;
+}
 .ui-slider-pip.ui-slider-pip-label {
   margin-top: -2em;
 }
@@ -14,9 +40,6 @@
 }
 
 .fb-activity-list .progress.category-bar {
-    border-bottom: 3px solid #E0E0E0;
-    border-left: 5px solid #E0E0E0;
-    border-right: 5px solid #E0E0E0;
     vertical-align: top;
     height: 30px;
 }
@@ -46,4 +69,8 @@
     color: white;
     font-size: 150%;
     margin-top: 5px;
+}
+
+#rAProgressBar {
+    box-shadow: 0px 2px 7px -2px #7F7E7E;
 }
