@@ -240,26 +240,25 @@ var LogWrap = {
                     height: ctrl.canvasHeight
                 }),
                 m('.row', [
-                    m('.col-xs-1'),
-                    m('.col-xs-10',
+                    m('.col-xs-10.col-xs-offset-1',
                         m('#rAProgressBar.progress.category-bar',
                             ctrl.loading ? m('.progress-bar.progress-bar-success.active.progress-bar-striped', {style: {width: '100%'}}, m('b', {style:{color: 'white'}}, 'Loading')) : ([
-                                m('a.progress-bar' + (ctrl.eventFilter === 'file' ? '.active.progress-bar-striped' : '.muted'), {style: {width: fileEvents+'%'},
+                                m('a.progress-bar' + (ctrl.eventFilter === 'file' ||  ctrl.eventFilter === false ?  '.selected' : ''), {style: {width: fileEvents+'%'},
                                     onclick: function(){
                                         ctrl.callLogs('file');
                                     }}, m('i.fa.fa-file.progress-bar-button')
                                 ),
-                                m('a.progress-bar.progress-bar-warning' + (ctrl.eventFilter === 'project' ? '.active.progress-bar-striped' : ''), {style: {width: nodeEvents+'%'},
+                                m('a.progress-bar.progress-bar-warning' + (ctrl.eventFilter === 'project' ||  ctrl.eventFilter === false ?  '.selected' : ''), {style: {width: nodeEvents+'%'},
                                     onclick: function(){
                                         ctrl.callLogs('project');
                                     }},  m('i.fa.fa-cube.progress-bar-button')
                                 ),
-                                m('a.progress-bar.progress-bar-info' + (ctrl.eventFilter === 'comment' ? '.active.progress-bar-striped' : ''), {style: {width: commentEvents+'%'},
+                                m('a.progress-bar.progress-bar-info' + (ctrl.eventFilter === 'comment' || ctrl.eventFilter === false ?  '.selected' : ''), {style: {width: commentEvents+'%'},
                                     onclick: function(){
                                         ctrl.callLogs('comment');
                                     }}, m('i.fa.fa-comment.progress-bar-button')
                                 ),
-                                m('a.progress-bar.progress-bar-danger' + (ctrl.eventFilter === 'wiki' ? '.active.progress-bar-striped' : ''), {style: {width: wikiEvents+'%'},
+                                m('a.progress-bar.progress-bar-danger' + (ctrl.eventFilter === 'wiki' || ctrl.eventFilter === false ?  '.selected' : ''), {style: {width: wikiEvents+'%'},
                                     onclick: function(){
                                         ctrl.callLogs('wiki');
                                     }}, m('i.fa.fa-book.progress-bar-button')
@@ -269,31 +268,30 @@ var LogWrap = {
                                     m('.progress-bar.no-items-progress-bar', 'None')
                             ])
                         )
-                    ),
-                    m('.col-xs-1')
+                    )
                 ]),
-                m('row', !ctrl.loading ? [m('.col-xs-1'), m('.col-xs-10', filterLabels()), m('.col-xs-1')] : ''),
-                m('br'), m('br'), !ctrl.loading ?
-                m('row',{style:{paddingTop: '15px'}}, [
-                    m('.col-xs-1', m('button.btn.fa.fa-angle-left.page-button#leftButton' + (ctrl.page > 1 ? '' : '.disabled.hidden'), {
+                m('.row', !ctrl.loading ? [m('.col-xs-10.col-xs-offset-1', filterLabels())] : ''),
+                 !ctrl.loading ?
+                m('.row',{style:{paddingTop: '15px'}}, [
+                    m('.col-xs-1', m('#leftButton', m('i.fa.fa-angle-left.page-button#leftButton' + (ctrl.page > 1 ? '' : '.disabled.hidden'), {
                         onclick: function(){
                             ctrl.page--;
                             ctrl.getLogs();
-                    }})),
-                    m('#logs.col-xs-10', {config: addButtons},(ctrl.activityLogs() && (ctrl.activityLogs().length > 0))? ctrl.activityLogs().map(function(item){
+                    }}))),
+                    m('#logs.col-xs-10', {config: addButtons} ,(ctrl.activityLogs() && (ctrl.activityLogs().length > 0))? ctrl.activityLogs().map(function(item){
                         return m('', [m('.fb-activity-item.activity-item',
                             {style: {borderLeft: 'solid 5px ' + categoryColor(item.attributes.action)}}, [
                             m('span.text-muted.m-r-xs', item.attributes.formattableDate.local),
                             m.component(LogText,item)
                         ]), m('', {style: {padding: '5px'}})]);
                     }) : m('p','No activity in this time range.')),
-                    m('.col-xs-1', m('button.btn.fa.fa-angle-right.page-button#rightButton' + (ctrl.lastPage > ctrl.page ? '' : '.disabled.hidden'), {
+                    m('.col-xs-1', m('#rightButton', m('i.fa.fa-angle-right.page-button' + (ctrl.lastPage > ctrl.page ? '' : '.disabled.hidden'), {
                         onclick: function(){
                             ctrl.page++;
                             ctrl.getLogs();
                         }
-                    }))
-                ]) : m('.spinner-loading-wrapper', [m('.logo-spin.logo-lg'), m('p.m-t-sm.fg-load-message', 'Loading logs...')]), m('br'),
+                    })))
+                ]) : m('.spinner-loading-wrapper', [m('.logo-spin.logo-lg'), m('p.m-t-sm.fg-load-message', 'Loading logs...')]),
                 !ctrl.loading ? m('p.text-center', ctrl.page + ' of ' + ctrl.lastPage) : '',
             ]);
     }
