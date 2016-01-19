@@ -48,7 +48,7 @@
 }
 
 .col-xs-1 .page-button {
-    font-size: 40px;
+    font-size: 30px;
 }
 
 .activity-item {
@@ -88,9 +88,13 @@
     justify-content: center;
     cursor: pointer;
     color: #666;
+    text-align: center;
+    border: 1px solid #f8f8f8;
 }
+
 #rightButton:hover, #leftButton:hover {
     color: #333;
+    background-color: #fcfcfc;
 }
 
 #rAProgressBar .progress-bar {
@@ -99,3 +103,10 @@
 #rAProgressBar .progress-bar.selected {
     opacity: 1;
 }
+
+@media only screen and  (max-width : 992px) {
+    .col-xs-1 .page-button {
+        font-size: 20px;
+    }
+}
+

@@ -276,24 +276,24 @@ var LogWrap = {
                 m('.row', !ctrl.loading ? [m('.col-xs-10.col-xs-offset-1', filterLabels())] : ''),
                  !ctrl.loading ?
                 m('.row',{style:{paddingTop: '15px'}}, [
-                    m('.col-xs-1', m('#leftButton', m('i.fa.fa-angle-left.page-button#leftButton' + (ctrl.page > 1 ? '' : '.disabled.hidden'), {
+                    m('.col-xs-1', m('#leftButton' + (ctrl.page > 1 ? '' : '.disabled.hidden'), {
                         onclick: function(){
                             ctrl.page--;
                             ctrl.getLogs();
-                    }}))),
+                        }},m('i.fa.fa-angle-left.page-button'))),
                     m('#logs.col-xs-10', {config: addButtons} ,(ctrl.activityLogs() && (ctrl.activityLogs().length > 0))? ctrl.activityLogs().map(function(item){
-                        return m('', [m('.fb-activity-item.activity-item',
+                        return m('.fb-activity-item.activity-item',
                             {style: {borderLeft: 'solid 5px ' + categoryColor(item.attributes.action)}}, [
                             m('span.text-muted.m-r-xs', item.attributes.formattableDate.local),
                             m.component(LogText,item)
-                        ]), m('', {style: {padding: '5px'}})]);
+                        ]);
                     }) : m('p','No activity in this time range.')),
-                    m('.col-xs-1', m('#rightButton', m('i.fa.fa-angle-right.page-button' + (ctrl.lastPage > ctrl.page ? '' : '.disabled.hidden'), {
+                    m('.col-xs-1', m('#rightButton' + (ctrl.lastPage > ctrl.page ? '' : '.disabled.hidden'),{
                         onclick: function(){
                             ctrl.page++;
                             ctrl.getLogs();
                         }
-                    })))
+                    }, m('i.fa.fa-angle-right.page-button' )))
                 ]) : m('.spinner-loading-wrapper', [m('.logo-spin.logo-lg'), m('p.m-t-sm.fg-load-message', 'Loading logs...')]),
                 !ctrl.loading ? m('p.text-center', ctrl.page + ' of ' + ctrl.lastPage) : '',
             ]);
