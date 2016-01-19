@@ -225,7 +225,7 @@ var LogWrap = {
                 ])
             } else {
                 return m('p', [
-                    'Filtering on ' + (ctrl.eventFilter === 'file' ? 'Files' : ctrl.eventFilter === 'project' ? 'Projects' : ctrl.eventFilter === 'comment' ? 'Comments' : 'Wiki') + ' ',
+                    m('b','Filtering on '), (ctrl.eventFilter === 'file' ? 'Files' : ctrl.eventFilter === 'project' ? 'Projects' : ctrl.eventFilter === 'comment' ? 'Comments' : 'Wiki') + ' ',
                     m('a.fa.fa-close', {onclick: function(){ctrl.callLogs(ctrl.eventFilter)}})
                 ]);
             }
