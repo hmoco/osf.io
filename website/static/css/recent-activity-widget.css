@@ -1,8 +1,7 @@
 
 
 #recentActivityWidget {
-    width: 90%;
-    margin-left: 5%;
+    min-height: 660px;
 }
 
 #recentActivitySlider .progress-bar {
