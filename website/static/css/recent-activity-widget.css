@@ -10,6 +10,9 @@
     width: 100%;
 }
 
+#recentActivityWidget .badge {
+    background-color: #bbbbbb;
+}
 /*  Override  slider */
 .ui-slider .ui-slider-handle {
     width: 20px;

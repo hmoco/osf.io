@@ -222,11 +222,14 @@ var LogWrap = {
                     nodeEvents ? m('a', {onclick: function(){ctrl.callLogs('project')}}, 'Projects' + (commentEvents || wikiEvents ? ', ': '')): '',
                     commentEvents ? m('a', {onclick: function(){ctrl.callLogs('comment')}}, 'Comments' + (wikiEvents ? ', ': '')): '',
                     wikiEvents ? m('a', {onclick: function(){ctrl.callLogs('wiki')}}, 'Wiki'): ''
-                ])
+                ]);
             } else {
                 return m('p', [
-                    m('b','Filtering on '), (ctrl.eventFilter === 'file' ? 'Files' : ctrl.eventFilter === 'project' ? 'Projects' : ctrl.eventFilter === 'comment' ? 'Comments' : 'Wiki') + ' ',
-                    m('a.fa.fa-close', {onclick: function(){ctrl.callLogs(ctrl.eventFilter)}})
+                    m('span','Filtering on '),
+                    m('b', (ctrl.eventFilter === 'file' ? 'Files' : ctrl.eventFilter === 'project' ? 'Projects' : ctrl.eventFilter === 'comment' ? 'Comments' : 'Wiki') + ' '),
+                    m('span.badge.pointer.m-l-xs', {
+                        onclick: function(){ ctrl.callLogs(ctrl.eventFilter); },
+                    }, [ m('i.fa.fa-close'), ' Clear'])
                 ]);
             }
         };
