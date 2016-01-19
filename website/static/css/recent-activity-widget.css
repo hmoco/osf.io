@@ -54,7 +54,12 @@
 .activity-item {
     padding: 10px;
     background-color: #f8f8f8;
+    margin-bottom: 5px;
 }
+.activity-item:last-child {
+    margin-bottom: 0;
+}
+
 
 .time-slider-parent {
     margin-bottom: -10px;
