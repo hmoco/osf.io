@@ -121,7 +121,7 @@ var LogWrap = {
         var values = [(Number(ctrl.dateBegin.format('x'))/div | 0), (Number(ctrl.dateEnd.format('x'))/div | 0)];
         var makeSliderProgress =  function(){
             return '<div id="fillerBar" class="progress" style="height: 11px">' +
-                        '<div class="progress-bar"></div>' + //need right color for this
+                        '<div class="progress-bar"></div>' +
                 '</div>';
         };
         var makeLine = function(canvas){
@@ -294,8 +294,8 @@ var LogWrap = {
                             ctrl.getLogs();
                         }
                     }, m('i.fa.fa-angle-right.page-button' )))
-                ]) : m('.spinner-loading-wrapper', [m('.logo-spin.logo-lg'), m('p.m-t-sm.fg-load-message', 'Loading logs...')]),
-                !ctrl.loading ? m('p.text-center', ctrl.page + ' of ' + ctrl.lastPage) : '',
+                ]) : m('.spinner-loading-wrapper', [m('.logo-spin.logo-md'), m('p.m-t-sm.fg-load-message', 'Loading logs...')]),
+                !ctrl.loading ? m('p.activity-pages.m-t-md.text-center', ctrl.page + ' of ' + ctrl.lastPage) : '',
             ]);
     }
 };
