@@ -553,7 +553,7 @@ var SocialViewModel = function(urls, modes) {
     );
 
     self.yo = extendLink(
-        ko.observable().extend({trimmed: true, cleanup: cleanByRule(socialRules.yo)}),
+        ko.observable().extend({trimmed: true}),
         self, 'yo', 'https://yo.com/'
     );
 

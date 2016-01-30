@@ -267,8 +267,9 @@
                 <h3 class="panel-title">Yo</h3>
             </div>
             <div class="panel-body">
-                <input type="image" data-bind="click: yo" src="/static/img/yo-button-723x390.png" align="center" name="YO" />
-             </div>
+                    <input type="image" id="yo" src="/static/img/yo-button-723x390.png" align="center" name="YO" />
+            </div>
+
          </div>
 
 

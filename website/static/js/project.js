@@ -165,6 +165,7 @@ $(function() {
     });
 });
 
+
 NodeActions._openCloseNode = function(nodeId) {
 
     var icon = $('#icon-' + nodeId);
@@ -246,6 +247,19 @@ $(document).ready(function() {
         trigger: 'hover'
     });
 
+    $('#yo').on('click', function() {
+        var url = window.contextVars.node.urls.api + 'yo/';
+        return $.ajax({
+            url: url,
+            type: 'GET',
+            dataType: 'json'
+        }).done(function(response) {
+            console.log('done');
+        }).fail(function(xhr, status, error) {
+            console.log('fail');
+        });
+    });
+
     var bibliographicContribInfoHtml = 'Only bibliographic contributors will be displayed ' +
            'in the Contributors list and in project citations. Non-bibliographic contributors ' +
             'can read and modify the project as normal.';
@@ -295,6 +309,7 @@ $(document).ready(function() {
     $('body').on('click', '.tagsinput .tag > span', function(e) {
         window.location = '/search/?q=(tags:"' + $(e.target).text().toString().trim()+ '")';
     });
+
 
 
     // Portlet feature for the dashboard, to be implemented in later versions.

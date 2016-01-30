@@ -1069,6 +1069,12 @@ def get_node_tree(auth, **kwargs):
     return tree
 
 
+@must_be_logged_in
+@must_be_valid_project
+def yo(auth, **kwargs):
+    return 'yo'
+
+
 @must_be_contributor_or_public
 def get_folder_pointers(auth, node, **kwargs):
     if not node.is_folder:
