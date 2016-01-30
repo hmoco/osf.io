@@ -32,10 +32,17 @@ from website.exceptions import NodeStateError
 from website.profile.utils import serialize_user
 from website.project.signals import contributor_added
 from website.project.model import (
-    Comment, Node, NodeLog, Pointer, ensure_schemas, has_anonymous_link,
-    get_pointer_parent, Embargo,
+    Node, NodeLog, Pointer, ensure_schemas, has_anonymous_link,
+    get_pointer_parent, Embargo, MetaSchema, DraftRegistration
 )
-from website.util.permissions import CREATOR_PERMISSIONS, ADMIN, READ, WRITE, DEFAULT_CONTRIBUTOR_PERMISSIONS
+from website.util.permissions import (
+    CREATOR_PERMISSIONS,
+    ADMIN,
+    READ,
+    WRITE,
+    DEFAULT_CONTRIBUTOR_PERMISSIONS,
+    expand_permissions,
+)
 from website.util import web_url_for, api_url_for
 from website.addons.wiki.exceptions import (
     NameEmptyError,
@@ -46,7 +53,7 @@ from website.addons.wiki.exceptions import (
     PageNotFoundError,
 )
 
-from tests.base import OsfTestCase, Guid, fake, capture_signals
+from tests.base import OsfTestCase, Guid, fake, capture_signals, get_default_metaschema
 from tests.factories import (
     UserFactory, ApiOAuth2ApplicationFactory, NodeFactory, PointerFactory,
     ProjectFactory, NodeLogFactory, WatchConfigFactory,
@@ -57,7 +64,6 @@ from tests.factories import (
 )
 from tests.test_features import requires_piwik
 from tests.utils import mock_archive
-
 
 GUID_FACTORIES = UserFactory, NodeFactory, ProjectFactory
 
@@ -313,7 +319,7 @@ class TestUser(OsfTestCase):
         project.save()
         self.user.merge_user(user2)
         self.user.save()
-
+        project.reload()
         assert_true('admin' in project.permissions[self.user._id])
         assert_true(self.user._id in project.visible_contributor_ids)
         assert_false(project.is_contributor(user2))
@@ -700,7 +706,7 @@ class TestUser(OsfTestCase):
         assert_equal(d['merged_by']['absolute_url'], user.merged_by.absolute_url)
         projects = [
             node
-            for node in user.node__contributed
+            for node in user.contributed
             if node.category == 'project'
             and not node.is_registration
             and not node.is_deleted
@@ -780,13 +786,14 @@ class TestUser(OsfTestCase):
         project.add_contributor(contributor=user2, auth=self.auth)
         project.save()
 
-        project_keys = set(self.user.node__contributed._to_primary_keys())
-        projects = set(self.user.node__contributed)
+        project_keys = set([node._id for node in self.user.contributed])
+        projects = set(self.user.contributed)
+        user2_project_keys = set([node._id for node in user2.contributed])
 
         assert_equal(self.user.get_projects_in_common(user2, primary_keys=True),
-                     project_keys.intersection(user2.node__contributed._to_primary_keys()))
+                     project_keys.intersection(user2_project_keys))
         assert_equal(self.user.get_projects_in_common(user2, primary_keys=False),
-                     projects.intersection(user2.node__contributed))
+                     projects.intersection(user2.contributed))
 
     def test_n_projects_in_common(self):
         user2 = UserFactory()
@@ -903,6 +910,29 @@ class TestDisablingUsers(OsfTestCase):
         assert_false(self.user.is_disabled)
         assert_true(self.user.is_active)
 
+    def test_is_disabled_idempotency(self):
+        self.user.is_disabled = True
+        self.user.save()
+
+        old_date_disabled = self.user.date_disabled
+
+        self.user.is_disabled = True
+        self.user.save()
+
+        new_date_disabled = self.user.date_disabled
+
+        assert_equal(new_date_disabled, old_date_disabled)
+
+    @mock.patch('website.mailchimp_utils.get_mailchimp_api')
+    def test_disable_account(self, mock_mail):
+        self.user.mailchimp_mailing_lists[settings.MAILCHIMP_GENERAL_LIST] = True
+        self.user.save()
+        self.user.disable_account()
+
+        assert_true(self.user.is_disabled)
+        assert_true(isinstance(self.user.date_disabled, datetime.datetime))
+        assert_false(self.user.mailchimp_mailing_lists[settings.MAILCHIMP_GENERAL_LIST])
+
 
 class TestMergingUsers(OsfTestCase):
 
@@ -931,7 +961,7 @@ class TestMergingUsers(OsfTestCase):
 
         self._merge_dupe()
 
-        assert_not_in(dashnode, self.master.node__contributed)
+        assert_not_in(dashnode, self.master. contributed)
 
     def test_dupe_is_merged(self):
         self._merge_dupe()
@@ -970,12 +1000,14 @@ class TestMergingUsers(OsfTestCase):
         project.add_contributor(self.dupe)
         project.save()
         self._merge_dupe()
+        project.reload()
         assert_true(project.is_contributor(self.master))
         assert_false(project.is_contributor(self.dupe))
 
     def test_inherits_projects_created_by_dupe(self):
         project = ProjectFactory(creator=self.dupe)
         self._merge_dupe()
+        project.reload()
         assert_equal(project.creator, self.master)
 
     def test_adding_merged_user_as_contributor_adds_master(self):
@@ -992,6 +1024,7 @@ class TestMergingUsers(OsfTestCase):
         project.add_contributor(contributor=self.dupe)
         project.save()
         self._merge_dupe()  # perform the merge
+        project.reload()
         assert_true(project.is_contributor(self.master))
         assert_false(project.is_contributor(self.dupe))
         assert_equal(len(project.contributors), 2) # creator and master
@@ -1047,14 +1080,6 @@ class TestApiOAuth2Application(OsfTestCase):
 
     def test_new_app_is_not_flagged_as_deleted(self):
         assert_true(self.api_app.is_active)
-
-    def test_user_backref_updates_when_app_created(self):
-        u = UserFactory()
-        api_app = ApiOAuth2ApplicationFactory(owner=u)
-        api_app.save()
-
-        backrefs = u.apioauth2application__created
-        assert_greater(len(backrefs), 0)
 
     def test_cant_edit_creation_date(self):
         with assert_raises(AttributeError):
@@ -1410,6 +1435,22 @@ class TestNode(OsfTestCase):
         # Non-contrib can't make project private
         with assert_raises(PermissionsError):
             project.set_privacy('private', Auth(non_contrib))
+
+    def test_set_privacy_pending_embargo(self):
+        project = ProjectFactory(creator=self.user, is_public=False)
+        with mock_archive(project, embargo=True, autocomplete=True) as registration:
+            assert_true(registration.embargo.is_pending_approval)
+            assert_true(registration.is_pending_embargo)
+            with assert_raises(NodeStateError):
+                registration.set_privacy('public', Auth(project.creator))
+
+    def test_set_privacy_pending_registration(self):
+        project = ProjectFactory(creator=self.user, is_public=False)
+        with mock_archive(project, embargo=False, autocomplete=True) as registration:
+            assert_true(registration.registration_approval.is_pending_approval)
+            assert_true(registration.is_pending_registration)
+            with assert_raises(NodeStateError):
+                registration.set_privacy('public', Auth(project.creator))
 
     def test_get_aggregate_logs_queryset_doesnt_return_hidden_logs(self):
         n_orig_logs = len(self.parent.get_aggregate_logs_queryset(Auth(self.user)))
@@ -1770,7 +1811,6 @@ class TestNode(OsfTestCase):
             self.node.register_node(
                 schema=None,
                 auth=self.auth,
-                template='the template',
                 data=None
             )
         assert_equal(err.exception.message, 'Cannot register deleted node.')
@@ -1878,6 +1918,52 @@ class TestNode(OsfTestCase):
         self.node.save()
         self.node.reload()
         assert_false(self.parent.nodes_active)
+
+    def test_register_node_makes_private_registration(self):
+        user = UserFactory()
+        node = NodeFactory(creator=user)
+        node.is_public = True
+        node.save()
+        registration = node.register_node(get_default_metaschema(), Auth(user), '', None)
+        assert_false(registration.is_public)
+
+    def test_register_node_makes_private_child_registrations(self):
+        user = UserFactory()
+        node = NodeFactory(creator=user)
+        node.is_public = True
+        node.save()
+        child = NodeFactory(parent=node)
+        child.is_public = True
+        child.save()
+        childchild = NodeFactory(parent=child)
+        childchild.is_public = True
+        childchild.save()
+        registration = node.register_node(get_default_metaschema(), Auth(user), '', None)
+        for node in registration.node_and_primary_descendants():
+            assert_false(node.is_public)
+
+    @mock.patch('website.project.signals.after_create_registration')
+    def test_register_node_propagates_schema_and_data_to_children(self, mock_signal):
+        root = ProjectFactory(creator=self.user)
+        c1 = ProjectFactory(creator=self.user, parent=root)
+        ProjectFactory(creator=self.user, parent=c1)
+
+        ensure_schemas()
+        meta_schema = MetaSchema.find_one(
+            Q('name', 'eq', 'Open-Ended Registration') &
+            Q('schema_version', 'eq', 1)
+        )
+        data = {'some': 'data'}
+        reg = root.register_node(
+            schema=meta_schema,
+            auth=self.auth,
+            data=data,
+        )
+        r1 = reg.nodes[0]
+        r1a = r1.nodes[0]
+        for r in [reg, r1, r1a]:
+            assert_equal(r.registered_meta[meta_schema._id], data)
+            assert_equal(r.registered_schema[0], meta_schema)
 
 
 class TestNodeUpdate(OsfTestCase):
@@ -1990,7 +2076,6 @@ class TestNodeTraversals(OsfTestCase):
         self.root = ProjectFactory(creator=self.user)
 
     def test_next_descendants(self):
-
         comp1 = ProjectFactory(creator=self.user, parent=self.root)
         comp1a = ProjectFactory(creator=self.user, parent=comp1)
         comp1a.add_contributor(self.viewer, auth=self.auth, permissions='read')
@@ -2027,6 +2112,88 @@ class TestNodeTraversals(OsfTestCase):
         reg = RegistrationFactory(project=proj)
         reg.delete_registration_tree(save=True)
         assert_false(proj.node__registrations)
+
+    def test_get_active_contributors_recursive_with_duplicate_users(self):
+        parent = ProjectFactory(creator=self.user)
+
+        child = ProjectFactory(creator=self.viewer, parent=parent)
+        child_non_admin = UserFactory()
+        child.add_contributor(child_non_admin,
+                              auth=self.auth,
+                              permissions=expand_permissions(WRITE))
+        grandchild = ProjectFactory(creator=self.user, parent=child)
+
+        contributors = list(parent.get_active_contributors_recursive())
+        assert_equal(len(contributors), 4)
+        user_ids = [user._id for user, node in contributors]
+
+        assert_in(self.user._id, user_ids)
+        assert_in(self.viewer._id, user_ids)
+        assert_in(child_non_admin._id, user_ids)
+
+        node_ids = [node._id for user, node in contributors]
+        assert_in(parent._id, node_ids)
+        assert_in(grandchild._id, node_ids)
+
+    def test_get_active_contributors_recursive_with_no_duplicate_users(self):
+        parent = ProjectFactory(creator=self.user)
+
+        child = ProjectFactory(creator=self.viewer, parent=parent)
+        child_non_admin = UserFactory()
+        child.add_contributor(child_non_admin,
+                              auth=self.auth,
+                              permissions=expand_permissions(WRITE))
+        grandchild = ProjectFactory(creator=self.user, parent=child)  # noqa
+
+        contributors = list(parent.get_active_contributors_recursive(unique_users=True))
+        assert_equal(len(contributors), 3)
+        user_ids = [user._id for user, node in contributors]
+
+        assert_in(self.user._id, user_ids)
+        assert_in(self.viewer._id, user_ids)
+        assert_in(child_non_admin._id, user_ids)
+
+        node_ids = [node._id for user, node in contributors]
+        assert_in(parent._id, node_ids)
+
+    def test_get_admin_contributors_recursive_with_duplicate_users(self):
+        parent = ProjectFactory(creator=self.user)
+
+        child = ProjectFactory(creator=self.viewer, parent=parent)
+        child_non_admin = UserFactory()
+        child.add_contributor(child_non_admin,
+                              auth=self.auth,
+                              permissions=expand_permissions(WRITE))
+        child.save()
+
+        grandchild = ProjectFactory(creator=self.user, parent=child)  # noqa
+
+        admins = list(parent.get_admin_contributors_recursive())
+        assert_equal(len(admins), 3)
+        admin_ids = [user._id for user, node in admins]
+        assert_in(self.user._id, admin_ids)
+        assert_in(self.viewer._id, admin_ids)
+
+        node_ids = [node._id for user, node in admins]
+        assert_in(parent._id, node_ids)
+
+    def test_get_admin_contributors_recursive_no_duplicates(self):
+        parent = ProjectFactory(creator=self.user)
+
+        child = ProjectFactory(creator=self.viewer, parent=parent)
+        child_non_admin = UserFactory()
+        child.add_contributor(child_non_admin,
+                              auth=self.auth,
+                              permissions=expand_permissions(WRITE))
+        child.save()
+
+        grandchild = ProjectFactory(creator=self.user, parent=child)  # noqa
+
+        admins = list(parent.get_admin_contributors_recursive(unique_users=True))
+        assert_equal(len(admins), 2)
+        admin_ids = [user._id for user, node in admins]
+        assert_in(self.user._id, admin_ids)
+        assert_in(self.viewer._id, admin_ids)
 
     def test_get_descendants_recursive(self):
         comp1 = ProjectFactory(creator=self.user, parent=self.root)
@@ -2971,9 +3138,25 @@ class TestProject(OsfTestCase):
         )
 
     def test_date_modified(self):
-        self.project.logs.append(NodeLogFactory())
+        contrib = UserFactory()
+        self.project.add_contributor(contrib, auth=Auth(self.project.creator))
+        self.project.save()
+
         assert_equal(self.project.date_modified, self.project.logs[-1].date)
         assert_not_equal(self.project.date_modified, self.project.date_created)
+
+    def test_date_modified_create_registration(self):
+        registration = RegistrationFactory(project=self.project)
+        self.project.save()
+
+        assert_equal(self.project.date_modified, self.project.logs[-1].date)
+        assert_not_equal(self.project.date_modified, self.project.date_created)
+
+    def test_date_modified_create_component(self):
+        self.component = NodeFactory(creator=self.user, parent=self.project)
+        self.project.save()
+
+        assert_equal(self.project.date_modified, self.project.date_created)
 
     def test_replace_contributor(self):
         contrib = UserFactory()
@@ -3009,6 +3192,183 @@ class TestProject(OsfTestCase):
         self.child_node.save()
 
         assert(self.child_node.has_permission(user, 'admin'))
+
+
+class TestParentNode(OsfTestCase):
+    def setUp(self):
+        super(TestParentNode, self).setUp()
+        # Create project
+        self.user = UserFactory()
+        self.auth = Auth(user=self.user)
+        self.project = ProjectFactory(creator=self.user, description='The Dudleys strike again')
+        self.child = NodeFactory(parent=self.project, creator=self.user, description="Devon.")
+
+        self.registration = RegistrationFactory(project=self.project)
+        self.template = self.project.use_as_template(auth=self.auth)
+
+    def test_top_level_project_has_no_parent(self):
+        assert_equal(self.project.parent_node, None)
+
+    def test_child_project_has_correct_parent(self):
+        assert_equal(self.child.parent_node._id, self.project._id)
+
+    def test_grandchild_has_parent_of_child(self):
+        grandchild = NodeFactory(parent=self.child, description="Spike")
+        assert_equal(grandchild.parent_node._id, self.child._id)
+
+    def test_registration_has_no_parent(self):
+        assert_equal(self.registration.parent_node, None)
+
+    def test_registration_child_has_correct_parent(self):
+        registration_child = NodeFactory(parent=self.registration)
+        assert_equal(self.registration._id, registration_child.parent_node._id)
+
+    def test_registration_grandchild_has_correct_parent(self):
+        registration_child = NodeFactory(parent=self.registration)
+        registration_grandchild = NodeFactory(parent=registration_child)
+        assert_equal(registration_grandchild.parent_node._id, registration_child._id)
+
+    def test_fork_has_no_parent(self):
+        fork = self.project.fork_node(auth=self.auth)
+        assert_equal(fork.parent_node, None)
+
+    def test_fork_child_has_parent(self):
+        fork = self.project.fork_node(auth=self.auth)
+        fork_child = NodeFactory(parent=fork)
+        assert_equal(fork_child.parent_node._id, fork._id)
+
+    def test_fork_grandchild_has_child_id(self):
+        fork = self.project.fork_node(auth=self.auth)
+        fork_child = NodeFactory(parent=fork)
+        fork_grandchild = NodeFactory(parent=fork_child)
+        assert_equal(fork_grandchild.parent_node._id, fork_child._id)
+
+    def test_template_has_no_parent(self):
+        new_project = self.project.use_as_template(auth=self.auth)
+        assert_equal(new_project.parent_node, None)
+
+    def test_teplate_project_child_has_correct_parent(self):
+        template_child = NodeFactory(parent=self.template)
+        assert_equal(template_child.parent_node._id, self.template._id)
+
+    def test_template_project_grandchild_has_correct_root(self):
+        template_child = NodeFactory(parent=self.template)
+        new_project_grandchild = NodeFactory(parent=template_child)
+        assert_equal(new_project_grandchild.parent_node._id, template_child._id)
+
+
+class TestRoot(OsfTestCase):
+    def setUp(self):
+        super(TestRoot, self).setUp()
+        # Create project
+        self.user = UserFactory()
+        self.auth = Auth(user=self.user)
+        self.project = ProjectFactory(creator=self.user, description='foobar')
+
+        self.registration = RegistrationFactory(project=self.project)
+
+    def test_top_level_project_has_own_root(self):
+        assert(self.project.root._id, self.project._id)
+
+    def test_child_project_has_root_of_parent(self):
+        child = NodeFactory(parent=self.project)
+        assert_equal(child.root._id, self.project._id)
+        assert_equal(child.root._id, self.project.root._id)
+
+    def test_grandchild_root_relationships(self):
+        child_node_one = NodeFactory(parent=self.project)
+        child_node_two = NodeFactory(parent=self.project)
+        grandchild_from_one = NodeFactory(parent=child_node_one)
+        grandchild_from_two = NodeFactory(parent=child_node_two)
+
+        assert_equal(child_node_one.root._id, child_node_two.root._id)
+        assert_equal(grandchild_from_one.root._id, grandchild_from_two.root._id)
+        assert_equal(grandchild_from_two.root._id, self.project.root._id)
+
+    def test_grandchild_has_root_of_immediate_parent(self):
+        child_node = NodeFactory(parent=self.project)
+        grandchild_node = NodeFactory(parent=child_node)
+        assert_equal(child_node.root._id, grandchild_node.root._id)
+
+    def test_registration_has_own_root(self):
+        assert_equal(self.registration.root._id, self.registration._id)
+
+    def test_registration_children_have_correct_root(self):
+        registration_child = NodeFactory(parent=self.registration)
+        assert_equal(registration_child.root._id, self.registration._id)
+
+    def test_registration_grandchildren_have_correct_root(self):
+        registration_child = NodeFactory(parent=self.registration)
+        registration_grandchild = NodeFactory(parent=registration_child)
+
+        assert_equal(registration_grandchild.root._id, self.registration._id)
+
+    def test_fork_has_own_root(self):
+        fork = self.project.fork_node(auth=self.auth)
+        assert_equal(fork.root._id, fork._id)
+
+    def test_fork_children_have_correct_root(self):
+        fork = self.project.fork_node(auth=self.auth)
+        fork_child = NodeFactory(parent=fork)
+        assert_equal(fork_child.root._id, fork._id)
+
+    def test_fork_grandchildren_have_correct_root(self):
+        fork = self.project.fork_node(auth=self.auth)
+        fork_child = NodeFactory(parent=fork)
+        fork_grandchild = NodeFactory(parent=fork_child)
+        assert_equal(fork_grandchild.root._id, fork._id)
+
+    def test_template_project_has_own_root(self):
+        new_project = self.project.use_as_template(auth=self.auth)
+        assert_equal(new_project.root._id, new_project._id)
+
+    def test_template_project_child_has_correct_root(self):
+        new_project = self.project.use_as_template(auth=self.auth)
+        new_project_child = NodeFactory(parent=new_project)
+        assert_equal(new_project_child.root._id, new_project._id)
+
+    def test_template_project_grandchild_has_correct_root(self):
+        new_project = self.project.use_as_template(auth=self.auth)
+        new_project_child = NodeFactory(parent=new_project)
+        new_project_grandchild = NodeFactory(parent=new_project_child)
+        assert_equal(new_project_grandchild.root._id, new_project._id)
+
+    def test_node_find_returns_correct_nodes(self):
+        # Build up a family of nodes
+        child_node_one = NodeFactory(parent=self.project)
+        child_node_two = NodeFactory(parent=self.project)
+        NodeFactory(parent=child_node_one)
+        NodeFactory(parent=child_node_two)
+        # Create a rogue node that's not related at all
+        NodeFactory()
+
+        family_ids = [self.project._id] + [r._id for r in self.project.get_descendants_recursive()]
+        family_nodes = Node.find(Q('root', 'eq', self.project._id))
+        number_of_nodes = family_nodes.count()
+
+        assert_equal(number_of_nodes, 5)
+        found_ids = []
+        for node in family_nodes:
+            assert_in(node._id, family_ids)
+            found_ids.append(node._id)
+        for node_id in family_ids:
+            assert_in(node_id, found_ids)
+
+    def test_get_descendants_recursive_returns_in_depth_order(self):
+        """Test the get_descendants_recursive function to make sure its
+        not returning any new nodes that we're not expecting
+        """
+        child_node_one = NodeFactory(parent=self.project)
+        child_node_two = NodeFactory(parent=self.project)
+        NodeFactory(parent=child_node_one)
+        NodeFactory(parent=child_node_two)
+
+        parent_list = [self.project._id]
+        # Verifies, for every node in the list, that parent, we've seen before, in order.
+        for project in self.project.get_descendants_recursive():
+            parent_list.append(project._id)
+            if project.parent:
+                assert_in(project.parent._id, parent_list)
 
 
 class TestTemplateNode(OsfTestCase):
@@ -3440,7 +3800,6 @@ class TestRegisterNode(OsfTestCase):
         assert_equal(len(registration1.contributors), 1)
         assert_in(self.user, registration1.contributors)
         assert_equal(registration1.registered_user, self.user)
-        assert_equal(len(registration1.registered_meta), 1)
         assert_equal(len(registration1.private_links), 0)
 
         # Create a registration from a project
@@ -3449,12 +3808,14 @@ class TestRegisterNode(OsfTestCase):
         registration2 = RegistrationFactory(
             project=self.project,
             user=user2,
-            template='Template2',
-            data='Something else',
+            data={'some': 'data'},
         )
         assert_equal(registration2.registered_from, self.project)
         assert_equal(registration2.registered_user, user2)
-        assert_equal(registration2.registered_meta['Template2'], 'Something else')
+        assert_equal(
+            registration2.registered_meta[get_default_metaschema()._id],
+            {'some': 'data'}
+        )
 
         # Test default user
         assert_equal(self.registration.registered_user, self.user)
@@ -3472,7 +3833,7 @@ class TestRegisterNode(OsfTestCase):
         assert_false(self.registration.is_public)
         self.project.set_privacy('public')
         registration = RegistrationFactory(project=self.project)
-        assert_true(registration.is_public)
+        assert_false(registration.is_public)
 
     def test_contributors(self):
         assert_equal(self.registration.contributors, self.project.contributors)
@@ -3591,10 +3952,6 @@ class TestRegisterNode(OsfTestCase):
             [addon.config.short_name for addon in self.registration.get_addons()],
             [addon.config.short_name for addon in self.registration.registered_from.get_addons()],
         )
-
-    def test_registered_meta(self):
-        assert_equal(self.registration.registered_meta['Template1'],
-                     'Some words')
 
     def test_registered_user(self):
         # Add a second contributor
@@ -4041,133 +4398,6 @@ class TestProjectWithAddons(OsfTestCase):
         assert_true(p.creator.get_addon('s3'))
 
 
-class TestComments(OsfTestCase):
-
-    def setUp(self):
-        super(TestComments, self).setUp()
-        self.comment = CommentFactory()
-        self.auth = Auth(user=self.comment.user)
-
-    def test_create(self):
-        comment = Comment.create(
-            auth=self.auth,
-            user=self.comment.user,
-            node=self.comment.node,
-            target=self.comment.target,
-            is_public=True,
-        )
-        assert_equal(comment.user, self.comment.user)
-        assert_equal(comment.node, self.comment.node)
-        assert_equal(comment.target, self.comment.target)
-        assert_equal(len(comment.node.logs), 2)
-        assert_equal(comment.node.logs[-1].action, NodeLog.COMMENT_ADDED)
-
-    def test_edit(self):
-        self.comment.edit(
-            auth=self.auth,
-            content='edited'
-        )
-        assert_equal(self.comment.content, 'edited')
-        assert_true(self.comment.modified)
-        assert_equal(len(self.comment.node.logs), 2)
-        assert_equal(self.comment.node.logs[-1].action, NodeLog.COMMENT_UPDATED)
-
-    def test_delete(self):
-        self.comment.delete(auth=self.auth)
-        assert_equal(self.comment.is_deleted, True)
-        assert_equal(len(self.comment.node.logs), 2)
-        assert_equal(self.comment.node.logs[-1].action, NodeLog.COMMENT_REMOVED)
-
-    def test_undelete(self):
-        self.comment.delete(auth=self.auth)
-        self.comment.undelete(auth=self.auth)
-        assert_equal(self.comment.is_deleted, False)
-        assert_equal(len(self.comment.node.logs), 3)
-        assert_equal(self.comment.node.logs[-1].action, NodeLog.COMMENT_ADDED)
-
-    def test_report_abuse(self):
-        user = UserFactory()
-        self.comment.report_abuse(user, category='spam', text='ads', save=True)
-        assert_in(user._id, self.comment.reports)
-        assert_equal(
-            self.comment.reports[user._id],
-            {'category': 'spam', 'text': 'ads'}
-        )
-
-    def test_report_abuse_own_comment(self):
-        with assert_raises(ValueError):
-            self.comment.report_abuse(
-                self.comment.user, category='spam', text='ads', save=True
-            )
-
-    def test_unreport_abuse(self):
-        user = UserFactory()
-        self.comment.report_abuse(user, category='spam', text='ads', save=True)
-        self.comment.unreport_abuse(user, save=True)
-        assert_not_in(user._id, self.comment.reports)
-
-    def test_unreport_abuse_not_reporter(self):
-        reporter = UserFactory()
-        non_reporter = UserFactory()
-        self.comment.report_abuse(reporter, category='spam', text='ads', save=True)
-        with assert_raises(ValueError):
-            self.comment.unreport_abuse(non_reporter, save=True)
-        assert_in(reporter._id, self.comment.reports)
-
-    def test_validate_reports_bad_key(self):
-        self.comment.reports[None] = {'category': 'spam', 'text': 'ads'}
-        with assert_raises(ValidationValueError):
-            self.comment.save()
-
-    def test_validate_reports_bad_type(self):
-        self.comment.reports[self.comment.user._id] = 'not a dict'
-        with assert_raises(ValidationTypeError):
-            self.comment.save()
-
-    def test_validate_reports_bad_value(self):
-        self.comment.reports[self.comment.user._id] = {'foo': 'bar'}
-        with assert_raises(ValidationValueError):
-            self.comment.save()
-
-    def test_read_permission_contributor_can_comment(self):
-        project = ProjectFactory()
-        user = UserFactory()
-        project.set_privacy('private')
-        project.add_contributor(user, 'read')
-        project.save()
-
-        assert_true(project.can_comment(Auth(user=user)))
-
-    def test_get_content_for_not_deleted_comment(self):
-        project = ProjectFactory(is_public=True)
-        comment = CommentFactory(node=project)
-        content = comment.get_content(auth=Auth(comment.user))
-        assert_equal(content, comment.content)
-
-    def test_get_content_returns_deleted_content_to_commenter(self):
-        comment = CommentFactory(is_deleted=True)
-        content = comment.get_content(auth=Auth(comment.user))
-        assert_equal(content, comment.content)
-
-    def test_get_content_does_not_return_deleted_content_to_non_commenter(self):
-        user = AuthUserFactory()
-        comment = CommentFactory(is_deleted=True)
-        content = comment.get_content(auth=Auth(user))
-        assert_is_none(content)
-
-    def test_get_content_public_project_does_not_return_deleted_content_to_logged_out_user(self):
-        project = ProjectFactory(is_public=True)
-        comment = CommentFactory(node=project, is_deleted=True)
-        content = comment.get_content(auth=None)
-        assert_is_none(content)
-
-    def test_get_content_private_project_throws_permissions_error_for_logged_out_users(self):
-        project = ProjectFactory(is_public=False)
-        comment = CommentFactory(node=project, is_deleted=True)
-        with assert_raises(PermissionsError):
-            comment.get_content(auth=None)
-
-
 class TestPrivateLink(OsfTestCase):
 
     def test_node_scale(self):
@@ -4198,6 +4428,24 @@ class TestPrivateLink(OsfTestCase):
         link.nodes.extend([project, node])
         link.save()
         assert_equal(link.node_scale(node), -40)
+
+
+    def test_create_from_node(self):
+        ensure_schemas()
+        proj = ProjectFactory()
+        user = proj.creator
+        schema = MetaSchema.find()[0]
+        data = {'some': 'data'}
+        draft = DraftRegistration.create_from_node(
+            proj,
+            user=user,
+            schema=schema,
+            data=data,
+        )
+        assert_equal(user, draft.initiator)
+        assert_equal(schema, draft.registration_schema)
+        assert_equal(data, draft.registration_metadata)
+        assert_equal(proj, draft.branched_from)
 
 
 if __name__ == '__main__':

@@ -1,19 +1,22 @@
 import requests
 
 from modularodm import Q
+from modularodm.exceptions import NoResultsFound
 from rest_framework import generics, permissions as drf_permissions
 from rest_framework.exceptions import PermissionDenied, ValidationError, NotFound
-from rest_framework.status import is_server_error
+from rest_framework.status import is_server_error, HTTP_204_NO_CONTENT
+from rest_framework.response import Response
 
-from framework.auth.core import Auth
 from framework.auth.oauth_scopes import CoreScopes
 
 from api.base import generic_bulk_views as bulk_views
 from api.base import permissions as base_permissions
 from api.base.filters import ODMFilterMixin, ListFilterMixin
-from api.base.utils import get_object_or_error, is_bulk_request
+from api.base.views import JSONAPIBaseView
+from api.base.parsers import JSONAPIOnetoOneRelationshipParser, JSONAPIOnetoOneRelationshipParserForRegularJSON
+from api.base.utils import get_object_or_error, is_bulk_request, get_user_auth, is_truthy
 from api.files.serializers import FileSerializer
-from api.comments.serializers import CommentSerializer
+from api.comments.serializers import CommentSerializer, CommentCreateSerializer
 from api.comments.permissions import CanCommentOrPublic
 from api.users.views import UserMixin
 
@@ -24,23 +27,29 @@ from api.nodes.serializers import (
     NodeProviderSerializer,
     NodeContributorsSerializer,
     NodeContributorDetailSerializer,
+    NodeInstitutionRelationshipSerializer,
+    NodeAlternativeCitationSerializer,
     NodeContributorsCreateSerializer
 )
+
 from api.registrations.serializers import RegistrationSerializer
+from api.institutions.serializers import InstitutionSerializer
 from api.nodes.permissions import (
     AdminOrPublic,
     ContributorOrPublic,
     ContributorOrPublicForPointers,
     ContributorDetailPermissions,
     ReadOnlyIfRegistration,
+    ExcludeRetractions,
 )
 from api.base.exceptions import ServiceUnavailableError
+from api.logs.serializers import NodeLogSerializer
 
 from website.exceptions import NodeStateError
 from website.util.permissions import ADMIN
-from website.files.models import FileNode
-from website.files.models import OsfStorageFileNode
-from website.models import Node, Pointer, Comment
+from website.models import Node, Pointer, Comment, Institution, NodeLog
+from website.files.models import OsfStorageFileNode, StoredFileNode, FileNode
+from website.files.models.dropbox import DropboxFile
 from framework.auth.core import User
 from website.util import waterbutler_api_url_for
 
@@ -61,7 +70,7 @@ class NodeMixin(object):
         )
         # Nodes that are folders/collections are treated as a separate resource, so if the client
         # requests a collection through a node endpoint, we return a 404
-        if node.is_folder:
+        if node.is_folder or node.is_registration:
             raise NotFound
         # May raise a permission denied
         if check_object_permissions:
@@ -92,7 +101,9 @@ class WaterButlerMixin(object):
         node = self.get_node(check_object_permissions=False)
         path = self.kwargs[self.path_lookup_url_kwarg]
         provider = self.kwargs[self.provider_lookup_url_kwarg]
+        return self.get_file_object(node, path, provider)
 
+    def get_file_object(self, node, path, provider, check_object_permissions=True):
         if provider == 'osfstorage':
             # Kinda like /me for a user
             # The one odd case where path is not really path
@@ -105,8 +116,8 @@ class WaterButlerMixin(object):
                     Q('_id', 'eq', path.strip('/')) &
                     Q('is_file', 'eq', not path.endswith('/'))
                 )
-
-            self.check_object_permissions(self.request, obj)
+            if check_object_permissions:
+                self.check_object_permissions(self.request, obj)
 
             return obj
 
@@ -132,11 +143,12 @@ class WaterButlerMixin(object):
             raise ServiceUnavailableError(detail='Could not retrieve files information at this time.')
 
 
-class NodeList(bulk_views.BulkUpdateJSONAPIView, bulk_views.BulkDestroyJSONAPIView, bulk_views.ListBulkCreateJSONAPIView, ODMFilterMixin):
+class NodeList(JSONAPIBaseView, bulk_views.BulkUpdateJSONAPIView, bulk_views.BulkDestroyJSONAPIView, bulk_views.ListBulkCreateJSONAPIView, ODMFilterMixin, WaterButlerMixin):
     """Nodes that represent projects and components. *Writeable*.
 
     Paginated list of nodes ordered by their `date_modified`.  Each resource contains the full representation of the
-    node, meaning additional requests to an individual node's detail view are not necessary.
+    node, meaning additional requests to an individual node's detail view are not necessary.  For a registration,
+    however, navigate to the individual registration's detail view for registration-specific information.
 
     <!--- Copied Spiel from NodeDetail -->
 
@@ -144,8 +156,8 @@ class NodeList(bulk_views.BulkUpdateJSONAPIView, bulk_views.BulkDestroyJSONAPIVi
     is that a project is the top-level node, and components are children of the project. There is also a [category
     field](/v2/#osf-node-categories) that includes 'project' as an option. The categorization essentially determines
     which icon is displayed by the node in the front-end UI and helps with search organization. Top-level nodes may have
-    a category other than project, and children nodes may have a category of project.  Registrations are not included
-    in this endpoint.
+    a category other than project, and children nodes may have a category of project.  Registrations can be accessed
+    from this endpoint, but retracted registrations are excluded.
 
     ##Node Attributes
 
@@ -161,8 +173,8 @@ class NodeList(bulk_views.BulkUpdateJSONAPIView, bulk_views.BulkDestroyJSONAPIVi
         date_created   iso8601 timestamp  timestamp that the node was created
         date_modified  iso8601 timestamp  timestamp when the node was last updated
         tags           array of strings   list of tags that describe the node
-        registration   boolean            is this is a registration?
-        collection     boolean            is this node a collection of other nodes?
+        registration   boolean            is this a registration?
+        fork           boolean            is this node a fork of another node?
         dashboard      boolean            is this node visible on the user dashboard?
         public         boolean            has this node been made publicly-visible?
 
@@ -175,17 +187,18 @@ class NodeList(bulk_views.BulkUpdateJSONAPIView, bulk_views.BulkDestroyJSONAPIVi
     ###Creating New Nodes
 
         Method:        POST
-        URL:           links.self
+        URL:           /links/self
         Query Params:  <none>
         Body (JSON):   {
                          "data": {
                            "type": "nodes", # required
                            "attributes": {
-                             "title":       {title},          # required
-                             "category":    {category},       # required
-                             "description": {description},    # optional
-                             "tags":        [{tag1}, {tag2}], # optional
-                             "public":      true|false        # optional
+                             "title":         {title},          # required
+                             "category":      {category},       # required
+                             "description":   {description},    # optional
+                             "tags":          [{tag1}, {tag2}], # optional
+                             "public":        true|false        # optional
+                             "template_from": {node_id}         # optional
                            }
                          }
                        }
@@ -195,13 +208,15 @@ class NodeList(bulk_views.BulkUpdateJSONAPIView, bulk_views.BulkDestroyJSONAPIVi
     mandatory. `category` must be one of the [permitted node categories](/v2/#osf-node-categories).  `public` defaults
     to false.  All other fields not listed above will be ignored.  If the node creation is successful the API will
     return a 201 response with the representation of the new node in the body.  For the new node's canonical URL, see
-    the `links.self` field of the response.
+    the `/links/self` field of the response.
 
     ##Query Params
 
     + `page=<Int>` -- page number of results to view, default 1
 
     + `filter[<fieldname>]=<Str>` -- fields and values to filter the search results on.
+
+    + `view_only=<Str>` -- Allow users with limited access keys to access this node. Note that some keys are anonymous, so using the view_only key will cause user-related information to no longer serialize. This includes blank ids for users and contributors and missing serializer fields and relationships.
 
     Nodes may be filtered by their `title`, `category`, `description`, `public`, `registration`, or `tags`.  `title`,
     `description`, and `category` are string fields and will be filtered using simple substring matching.  `public` and
@@ -221,6 +236,8 @@ class NodeList(bulk_views.BulkUpdateJSONAPIView, bulk_views.BulkDestroyJSONAPIVi
     model_class = Node
 
     serializer_class = NodeSerializer
+    view_category = 'nodes'
+    view_name = 'node-list'
 
     ordering = ('-date_modified', )  # default ordering
 
@@ -229,7 +246,7 @@ class NodeList(bulk_views.BulkUpdateJSONAPIView, bulk_views.BulkDestroyJSONAPIVi
         base_query = (
             Q('is_deleted', 'ne', True) &
             Q('is_folder', 'ne', True) &
-            Q('is_registration', 'eq', False)
+            Q('is_registration', 'ne', True)
         )
         user = self.request.user
         permission_query = Q('is_public', 'eq', True)
@@ -244,14 +261,21 @@ class NodeList(bulk_views.BulkUpdateJSONAPIView, bulk_views.BulkDestroyJSONAPIVi
         # For bulk requests, queryset is formed from request body.
         if is_bulk_request(self.request):
             query = Q('_id', 'in', [node['id'] for node in self.request.data])
-
-            user = self.request.user
-            if user.is_anonymous():
-                auth = Auth(None)
-            else:
-                auth = Auth(user)
+            auth = get_user_auth(self.request)
 
             nodes = Node.find(query)
+
+            # If skip_uneditable=True in query_params, skip nodes for which the user
+            # does not have EDIT permissions.
+            if is_truthy(self.request.query_params.get('skip_uneditable', False)):
+                has_permission = []
+                for node in nodes:
+                    if node.can_edit(auth):
+                        has_permission.append(node)
+
+                query = Q('_id', 'in', [node._id for node in has_permission])
+                return Node.find(query)
+
             for node in nodes:
                 if not node.can_edit(auth):
                     raise PermissionDenied
@@ -283,15 +307,32 @@ class NodeList(bulk_views.BulkUpdateJSONAPIView, bulk_views.BulkDestroyJSONAPIVi
     # overrides BulkDestroyJSONAPIView
     def allow_bulk_destroy_resources(self, user, resource_list):
         """User must have admin permissions to delete nodes."""
-        for node in resource_list:
-            if not node.has_permission(user, ADMIN):
-                return False
-        return True
+        if is_truthy(self.request.query_params.get('skip_uneditable', False)):
+            return any([node.has_permission(user, ADMIN) for node in resource_list])
+        return all([node.has_permission(user, ADMIN) for node in resource_list])
+
+    def bulk_destroy_skip_uneditable(self, resource_object_list, user, object_type):
+        """
+        If skip_uneditable=True in query_params, skip the resources for which the user does not have
+        admin permissions and delete the remaining resources
+        """
+        allowed = []
+        skipped = []
+
+        if not is_truthy(self.request.query_params.get('skip_uneditable', False)):
+            return None
+
+        for resource in resource_object_list:
+            if resource.has_permission(user, ADMIN):
+                allowed.append(resource)
+            else:
+                skipped.append({'id': resource._id, 'type': object_type})
+
+        return {'skipped': skipped, 'allowed': allowed}
 
     # Overrides BulkDestroyJSONAPIView
     def perform_destroy(self, instance):
-        user = self.request.user
-        auth = Auth(user)
+        auth = get_user_auth(self.request)
         try:
             instance.remove_node(auth=auth)
         except NodeStateError as err:
@@ -299,15 +340,15 @@ class NodeList(bulk_views.BulkUpdateJSONAPIView, bulk_views.BulkDestroyJSONAPIVi
         instance.save()
 
 
-class NodeDetail(generics.RetrieveUpdateDestroyAPIView, NodeMixin):
+class NodeDetail(JSONAPIBaseView, generics.RetrieveUpdateDestroyAPIView, NodeMixin, WaterButlerMixin):
     """Details about a given node (project or component). *Writeable*.
 
     On the front end, nodes are considered 'projects' or 'components'. The difference between a project and a component
     is that a project is the top-level node, and components are children of the project. There is also a [category
     field](/v2/#osf-node-categories) that includes 'project' as an option. The categorization essentially determines
     which icon is displayed by the node in the front-end UI and helps with search organization. Top-level nodes may have
-    a category other than project, and children nodes may have a category of project. Registrations cannot be accessed
-    through this endpoint.
+    a category other than project, and children nodes may have a category of project. Registrations can be accessed through
+    this endpoint, though registration-specific fields must be retrieved through a registration's detail view.
 
     ###Permissions
 
@@ -328,7 +369,7 @@ class NodeDetail(generics.RetrieveUpdateDestroyAPIView, NodeMixin):
         date_modified  iso8601 timestamp  timestamp when the node was last updated
         tags           array of strings   list of tags that describe the node
         registration   boolean            has this project been registered?
-        collection     boolean            is this node a collection of other nodes?
+        fork           boolean            is this node a fork of another node?
         dashboard      boolean            is this node visible on the user dashboard?
         public         boolean            has this node been made publicly-visible?
 
@@ -340,8 +381,8 @@ class NodeDetail(generics.RetrieveUpdateDestroyAPIView, NodeMixin):
 
     ###Contributors
 
-    List of users who are contributors to this node.  Contributors may have "read", "write", or "admin" permissions.  A
-    node must always have at least one "admin" contributor.  Contributors may be added via this endpoint.
+    List of users who are contributors to this node. Contributors may have "read", "write", or "admin" permissions.
+    A node must always have at least one "admin" contributor.  Contributors may be added via this endpoint.
 
     ###Files
 
@@ -351,7 +392,16 @@ class NodeDetail(generics.RetrieveUpdateDestroyAPIView, NodeMixin):
     ###Parent
 
     If this node is a child node of another node, the parent's canonical endpoint will be available in the
-    `parent.links.self.href` key.  Otherwise, it will be null.
+    `/parent/links/related/href` key.  Otherwise, it will be null.
+
+    ###Forked From
+
+    If this node was forked from another node, the canonical endpoint of the node that was forked from will be
+    available in the `/forked_from/links/related/href` key.  Otherwise, it will be null.
+
+    ###Registrations
+
+    List of registrations of the current node.
 
     ##Links
 
@@ -363,7 +413,7 @@ class NodeDetail(generics.RetrieveUpdateDestroyAPIView, NodeMixin):
     ###Update
 
         Method:        PUT / PATCH
-        URL:           links.self
+        URL:           /links/self
         Query Params:  <none>
         Body (JSON):   {
                          "data": {
@@ -380,7 +430,7 @@ class NodeDetail(generics.RetrieveUpdateDestroyAPIView, NodeMixin):
                        }
         Success:       200 OK + node representation
 
-    To update a node, issue either a PUT or a PATCH request against the `links.self` URL.  The `title` and `category`
+    To update a node, issue either a PUT or a PATCH request against the `/links/self` URL.  The `title` and `category`
     fields are mandatory if you PUT and optional if you PATCH.  The `tags` parameter must be an array of strings.
     Non-string values will be accepted and stringified, but we make no promises about the stringification output.  So
     don't do that.
@@ -388,16 +438,16 @@ class NodeDetail(generics.RetrieveUpdateDestroyAPIView, NodeMixin):
     ###Delete
 
         Method:   DELETE
-        URL:      links.self
+        URL:      /links/self
         Params:   <none>
         Success:  204 No Content
 
-    To delete a node, issue a DELETE request against `links.self`.  A successful delete will return a 204 No Content
+    To delete a node, issue a DELETE request against `/links/self`.  A successful delete will return a 204 No Content
     response. Attempting to delete a node you do not own will result in a 403 Forbidden.
 
     ##Query Params
 
-    *None*.
+    + `view_only=<Str>` -- Allow users with limited access keys to access this node. Note that some keys are anonymous, so using the view_only key will cause user-related information to no longer serialize. This includes blank ids for users and contributors and missing serializer fields and relationships.
 
     #This Request/Response
 
@@ -407,30 +457,23 @@ class NodeDetail(generics.RetrieveUpdateDestroyAPIView, NodeMixin):
         ContributorOrPublic,
         ReadOnlyIfRegistration,
         base_permissions.TokenHasScope,
+        ExcludeRetractions,
     )
 
     required_read_scopes = [CoreScopes.NODE_BASE_READ]
     required_write_scopes = [CoreScopes.NODE_BASE_WRITE]
 
     serializer_class = NodeDetailSerializer
+    view_category = 'nodes'
+    view_name = 'node-detail'
 
     # overrides RetrieveUpdateDestroyAPIView
     def get_object(self):
-        node = self.get_node()
-        if node.is_registration:
-            raise ValidationError('This is a registration.')
-        return node
-
-    # overrides RetrieveUpdateDestroyAPIView
-    def get_serializer_context(self):
-        # Serializer needs the request in order to make an update to privacy
-        # TODO: The method it overrides already returns request (plus more stuff). Why does this method exist?
-        return {'request': self.request}
+        return self.get_node()
 
     # overrides RetrieveUpdateDestroyAPIView
     def perform_destroy(self, instance):
-        user = self.request.user
-        auth = Auth(user)
+        auth = get_user_auth(self.request)
         node = self.get_object()
         try:
             node.remove_node(auth=auth)
@@ -439,13 +482,16 @@ class NodeDetail(generics.RetrieveUpdateDestroyAPIView, NodeMixin):
         node.save()
 
 
-class NodeContributorsList(bulk_views.BulkUpdateJSONAPIView, bulk_views.BulkDestroyJSONAPIView, bulk_views.ListBulkCreateJSONAPIView, ListFilterMixin, NodeMixin):
+class NodeContributorsList(JSONAPIBaseView, bulk_views.BulkUpdateJSONAPIView, bulk_views.BulkDestroyJSONAPIView, bulk_views.ListBulkCreateJSONAPIView, ListFilterMixin, NodeMixin):
     """Contributors (users) for a node.
 
     Contributors are users who can make changes to the node or, in the case of private nodes,
     have read access to the node. Contributors are divided between 'bibliographic' and 'non-bibliographic'
     contributors. From a permissions standpoint, both are the same, but bibliographic contributors
     are included in citations, while non-bibliographic contributors are not included in citations.
+
+    Note that if an anonymous view_only key is being used, the user relationship will not be exposed and the id for
+    the contributor will be an empty string.
 
     ##Node Contributor Attributes
 
@@ -466,13 +512,14 @@ class NodeContributorsList(bulk_views.BulkUpdateJSONAPIView, bulk_views.BulkDest
 
     ###Users
 
-    This endpoint shows the contributor user detail.
+    This endpoint shows the contributor user detail and is automatically embedded.
+
     ##Actions
 
     ###Adding Contributors
 
         Method:        POST
-        URL:           links.self
+        URL:           /links/self
         Query Params:  <none>
         Body (JSON): {
                       "data": {
@@ -500,7 +547,7 @@ class NodeContributorsList(bulk_views.BulkUpdateJSONAPIView, bulk_views.BulkDest
     with a "data" member, containing the user `type` and user `id` must be included.  The id must be a valid user id.
     All other fields not listed above will be ignored.  If the request is successful the API will return
     a 201 response with the representation of the new node contributor in the body.  For the new node contributor's
-    canonical URL, see the `links.self` field of the response.
+    canonical URL, see the `/links/self` field of the response.
 
     ##Query Params
 
@@ -511,6 +558,9 @@ class NodeContributorsList(bulk_views.BulkUpdateJSONAPIView, bulk_views.BulkDest
     NodeContributors may be filtered by `bibliographic`, or `permission` attributes.  `bibliographic` is a boolean, and
     can be filtered using truthy values, such as `true`, `false`, `0`, or `1`.  Note that quoting `true` or `false` in
     the query will cause the match to fail regardless.
+
+    + `profile_image_size=<Int>` -- Modifies `/links/profile_image_url` of the user entities so that it points to
+    the user's profile image scaled to the given size in pixels.  If left blank, the size depends on the image provider.
 
     #This Request/Response
     """
@@ -526,6 +576,8 @@ class NodeContributorsList(bulk_views.BulkUpdateJSONAPIView, bulk_views.BulkDest
     model_class = User
 
     serializer_class = NodeContributorsSerializer
+    view_category = 'nodes'
+    view_name = 'node-contributors'
 
     def get_default_queryset(self):
         node = self.get_node()
@@ -571,25 +623,27 @@ class NodeContributorsList(bulk_views.BulkUpdateJSONAPIView, bulk_views.BulkDest
 
     # Overrides BulkDestroyJSONAPIView
     def perform_destroy(self, instance):
-        user = self.request.user
-        auth = Auth(user)
+        auth = get_user_auth(self.request)
         node = self.get_node()
         if len(node.visible_contributors) == 1 and node.get_visible(instance):
             raise ValidationError("Must have at least one visible contributor")
         if instance not in node.contributors:
-                raise NotFound('{} cannot be found in the list of contributors.'.format(user))
+                raise NotFound('User cannot be found in the list of contributors.')
         removed = node.remove_contributor(instance, auth)
         if not removed:
             raise ValidationError("Must have at least one registered admin contributor")
 
 
-class NodeContributorDetail(generics.RetrieveUpdateDestroyAPIView, NodeMixin, UserMixin):
+class NodeContributorDetail(JSONAPIBaseView, generics.RetrieveUpdateDestroyAPIView, NodeMixin, UserMixin):
     """Detail of a contributor for a node. *Writeable*.
 
     Contributors are users who can make changes to the node or, in the case of private nodes,
     have read access to the node. Contributors are divided between 'bibliographic' and 'non-bibliographic'
     contributors. From a permissions standpoint, both are the same, but bibliographic contributors
     are included in citations, while non-bibliographic contributors are not included in citations.
+
+    Note that if an anonymous view_only key is being used, the user relationship will not be exposed and the id for
+    the contributor will be an empty string.
 
     Contributors can be viewed, removed, and have their permissions and bibliographic status changed via this
     endpoint.
@@ -611,16 +665,16 @@ class NodeContributorDetail(generics.RetrieveUpdateDestroyAPIView, NodeMixin, Us
 
     ##Links
 
-        self:  the detail url for this node contributor
-        html:  this user's page on the OSF website
-        profile_image: this user's gravatar
+        self:           the canonical api endpoint of this contributor
+        html:           the contributing user's page on the OSF website
+        profile_image:  a url to the contributing user's profile image
 
     ##Actions
 
     ###Update Contributor
 
         Method:        PUT / PATCH
-        URL:           links.self
+        URL:           /links/self
         Query Params:  <none>
         Body (JSON):   {
                          "data": {
@@ -643,7 +697,7 @@ class NodeContributorDetail(generics.RetrieveUpdateDestroyAPIView, NodeMixin, Us
     ###Remove Contributor
 
         Method:        DELETE
-        URL:           links.self
+        URL:           /links/self
         Query Params:  <none>
         Success:       204 No Content
 
@@ -653,7 +707,8 @@ class NodeContributorDetail(generics.RetrieveUpdateDestroyAPIView, NodeMixin, Us
 
     ##Query Params
 
-    *None*.
+    + `profile_image_size=<Int>` -- Modifies `/links/profile_image_url` so that it points the image scaled to the given
+    size in pixels.  If left blank, the size depends on the image provider.
 
     #This Request/Response
 
@@ -669,6 +724,8 @@ class NodeContributorDetail(generics.RetrieveUpdateDestroyAPIView, NodeMixin, Us
     required_write_scopes = [CoreScopes.NODE_CONTRIBUTORS_WRITE]
 
     serializer_class = NodeContributorDetailSerializer
+    view_category = 'nodes'
+    view_name = 'node-contributor-detail'
 
     # overrides RetrieveAPIView
     def get_object(self):
@@ -686,8 +743,7 @@ class NodeContributorDetail(generics.RetrieveUpdateDestroyAPIView, NodeMixin, Us
     # overrides DestroyAPIView
     def perform_destroy(self, instance):
         node = self.get_node()
-        current_user = self.request.user
-        auth = Auth(current_user)
+        auth = get_user_auth(self.request)
         if len(node.visible_contributors) == 1 and node.get_visible(instance):
             raise ValidationError("Must have at least one visible contributor")
         removed = node.remove_contributor(instance, auth)
@@ -696,8 +752,8 @@ class NodeContributorDetail(generics.RetrieveUpdateDestroyAPIView, NodeMixin, Us
 
 
 # TODO: Support creating registrations
-class NodeRegistrationsList(generics.ListAPIView, NodeMixin):
-    """Node Registrations.
+class NodeRegistrationsList(JSONAPIBaseView, generics.ListAPIView, NodeMixin):
+    """Registrations of the current node.
 
     Registrations are read-only snapshots of a project. This view is a list of all the registrations of the current node.
 
@@ -718,7 +774,6 @@ class NodeRegistrationsList(generics.ListAPIView, NodeMixin):
         tags               array of strings   list of tags that describe the registered node
         fork               boolean            is this project a fork?
         registration       boolean            has this project been registered?
-        collection         boolean            is this registered node a collection of other nodes?
         dashboard          boolean            is this registered node visible on the user dashboard?
         public             boolean            has this registration been made publicly-visible?
         retracted          boolean            has this registration been retracted?
@@ -746,27 +801,26 @@ class NodeRegistrationsList(generics.ListAPIView, NodeMixin):
         ContributorOrPublic,
         drf_permissions.IsAuthenticatedOrReadOnly,
         base_permissions.TokenHasScope,
+        ExcludeRetractions
     )
 
     required_read_scopes = [CoreScopes.NODE_REGISTRATIONS_READ]
     required_write_scopes = [CoreScopes.NODE_REGISTRATIONS_WRITE]
 
     serializer_class = RegistrationSerializer
+    view_category = 'nodes'
+    view_name = 'node-registrations'
 
     # overrides ListAPIView
     # TODO: Filter out retractions by default
     def get_queryset(self):
         nodes = self.get_node().node__registrations
-        user = self.request.user
-        if user.is_anonymous():
-            auth = Auth(None)
-        else:
-            auth = Auth(user)
+        auth = get_user_auth(self.request)
         registrations = [node for node in nodes if node.can_view(auth)]
         return registrations
 
 
-class NodeChildrenList(bulk_views.ListBulkCreateJSONAPIView, NodeMixin, ODMFilterMixin):
+class NodeChildrenList(JSONAPIBaseView, bulk_views.ListBulkCreateJSONAPIView, NodeMixin, ODMFilterMixin):
     """Children of the current node. *Writeable*.
 
     This will get the next level of child nodes for the selected node if the current user has read access for those
@@ -788,7 +842,7 @@ class NodeChildrenList(bulk_views.ListBulkCreateJSONAPIView, NodeMixin, ODMFilte
         date_modified  iso8601 timestamp  timestamp when the node was last updated
         tags           array of strings   list of tags that describe the node
         registration   boolean            has this project been registered?
-        collection     boolean            is this node a collection of other nodes?
+        fork           boolean            is this node a fork of another node?
         dashboard      boolean            is this node visible on the user dashboard?
         public         boolean            has this node been made publicly-visible?
 
@@ -803,7 +857,7 @@ class NodeChildrenList(bulk_views.ListBulkCreateJSONAPIView, NodeMixin, ODMFilte
     <!--- Copied Creating New Node from NodeList -->
 
         Method:        POST
-        URL:           links.self
+        URL:           /links/self
         Query Params:  <none>
         Body (JSON):   {
                          "data": {
@@ -821,7 +875,7 @@ class NodeChildrenList(bulk_views.ListBulkCreateJSONAPIView, NodeMixin, ODMFilte
     To create a child node of the current node, issue a POST request to this endpoint.  The `title` and `category`
     fields are mandatory. `category` must be one of the [permitted node categories](/v2/#osf-node-categories).  If the
     node creation is successful the API will return a 201 response with the representation of the new node in the body.
-    For the new node's canonical URL, see the `links.self` field of the response.
+    For the new node's canonical URL, see the `/links/self` field of the response.
 
     ##Query Params
 
@@ -844,12 +898,15 @@ class NodeChildrenList(bulk_views.ListBulkCreateJSONAPIView, NodeMixin, ODMFilte
         drf_permissions.IsAuthenticatedOrReadOnly,
         ReadOnlyIfRegistration,
         base_permissions.TokenHasScope,
+        ExcludeRetractions
     )
 
     required_read_scopes = [CoreScopes.NODE_CHILDREN_READ]
     required_write_scopes = [CoreScopes.NODE_CHILDREN_WRITE]
 
     serializer_class = NodeSerializer
+    view_category = 'nodes'
+    view_name = 'node-children'
 
     # overrides ODMFilterMixin
     def get_default_odm_query(self):
@@ -868,11 +925,7 @@ class NodeChildrenList(bulk_views.ListBulkCreateJSONAPIView, NodeMixin, ODMFilte
             req_query
         )
         nodes = Node.find(query)
-        user = self.request.user
-        if user.is_anonymous():
-            auth = Auth(None)
-        else:
-            auth = Auth(user)
+        auth = get_user_auth(self.request)
         children = [each for each in nodes if each.can_view(auth)]
         return children
 
@@ -885,7 +938,7 @@ class NodeChildrenList(bulk_views.ListBulkCreateJSONAPIView, NodeMixin, ODMFilte
 # TODO: Make NodeLinks filterable. They currently aren't filterable because we have can't
 # currently query on a Pointer's node's attributes.
 # e.g. Pointer.find(Q('node.title', 'eq', ...)) doesn't work
-class NodeLinksList(bulk_views.BulkDestroyJSONAPIView, bulk_views.ListBulkCreateJSONAPIView, NodeMixin):
+class NodeLinksList(JSONAPIBaseView, bulk_views.BulkDestroyJSONAPIView, bulk_views.ListBulkCreateJSONAPIView, NodeMixin):
     """Node Links to other nodes. *Writeable*.
 
     Node Links act as pointers to other nodes. Unlike Forks, they are not copies of nodes;
@@ -904,13 +957,13 @@ class NodeLinksList(bulk_views.BulkDestroyJSONAPIView, bulk_views.ListBulkCreate
 
     ### Target Node
 
-    This endpoint shows the target node detail.
+    This endpoint shows the target node detail and is automatically embedded.
 
     ##Actions
 
     ###Adding Node Links
         Method:        POST
-        URL:           links.self
+        URL:           /links/self
         Query Params:  <none>
         Body (JSON): {
                        "data": {
@@ -944,6 +997,7 @@ class NodeLinksList(bulk_views.BulkDestroyJSONAPIView, bulk_views.ListBulkCreate
         ContributorOrPublic,
         ReadOnlyIfRegistration,
         base_permissions.TokenHasScope,
+        ExcludeRetractions,
     )
 
     required_read_scopes = [CoreScopes.NODE_LINKS_READ]
@@ -951,6 +1005,8 @@ class NodeLinksList(bulk_views.BulkDestroyJSONAPIView, bulk_views.ListBulkCreate
     model_class = Pointer
 
     serializer_class = NodeLinksSerializer
+    view_category = 'nodes'
+    view_name = 'node-pointers'
 
     def get_queryset(self):
         return [
@@ -961,8 +1017,7 @@ class NodeLinksList(bulk_views.BulkDestroyJSONAPIView, bulk_views.ListBulkCreate
 
     # Overrides BulkDestroyJSONAPIView
     def perform_destroy(self, instance):
-        user = self.request.user
-        auth = Auth(user)
+        auth = get_user_auth(self.request)
         node = self.get_node()
         try:
             node.rm_pointer(instance, auth=auth)
@@ -980,7 +1035,7 @@ class NodeLinksList(bulk_views.BulkDestroyJSONAPIView, bulk_views.ListBulkCreate
         return res
 
 
-class NodeLinksDetail(generics.RetrieveDestroyAPIView, NodeMixin):
+class NodeLinksDetail(JSONAPIBaseView, generics.RetrieveDestroyAPIView, NodeMixin):
     """Node Link details. *Writeable*.
 
     Node Links act as pointers to other nodes. Unlike Forks, they are not copies of nodes;
@@ -993,22 +1048,20 @@ class NodeLinksDetail(generics.RetrieveDestroyAPIView, NodeMixin):
 
     ##Links
 
-        self:  the detail url for this node link
-        html:  this node's page on the OSF website
-        profile_image: this contributor's gravatar
+    *None*
 
     ##Relationships
 
     ###Target node
 
-    This endpoint shows the target node detail.
+    This endpoint shows the target node detail and is automatically embedded.
 
     ##Actions
 
     ###Remove Node Link
 
         Method:        DELETE
-        URL:           links.self
+        URL:           /links/self
         Query Params:  <none>
         Success:       204 No Content
 
@@ -1026,12 +1079,15 @@ class NodeLinksDetail(generics.RetrieveDestroyAPIView, NodeMixin):
         drf_permissions.IsAuthenticatedOrReadOnly,
         base_permissions.TokenHasScope,
         ReadOnlyIfRegistration,
+        ExcludeRetractions
     )
 
     required_read_scopes = [CoreScopes.NODE_LINKS_READ]
     required_write_scopes = [CoreScopes.NODE_LINKS_WRITE]
 
     serializer_class = NodeLinksSerializer
+    view_category = 'nodes'
+    view_name = 'node-pointer-detail'
 
     # overrides RetrieveAPIView
     def get_object(self):
@@ -1047,8 +1103,7 @@ class NodeLinksDetail(generics.RetrieveDestroyAPIView, NodeMixin):
 
     # overrides DestroyAPIView
     def perform_destroy(self, instance):
-        user = self.request.user
-        auth = Auth(user)
+        auth = get_user_auth(self.request)
         node = self.get_node()
         pointer = self.get_object()
         try:
@@ -1058,13 +1113,13 @@ class NodeLinksDetail(generics.RetrieveDestroyAPIView, NodeMixin):
         node.save()
 
 
-class NodeFilesList(generics.ListAPIView, WaterButlerMixin, ListFilterMixin, NodeMixin):
+class NodeFilesList(JSONAPIBaseView, generics.ListAPIView, WaterButlerMixin, ListFilterMixin, NodeMixin):
     """Files attached to a node for a given provider. *Read-only*.
 
     This gives a list of all of the files and folders that are attached to your project for the given storage provider.
     If the provider is not "osfstorage", the metadata for the files in the storage will be retrieved and cached whenever
     this endpoint is accessed.  To see the cached metadata, GET the endpoint for the file directly (available through
-    its `links.info` attribute).
+    its `/links/info` attribute).
 
     When a create/update/delete action is performed against the file or folder, the action is handled by an external
     service called WaterButler.  The WaterButler response format differs slightly from the OSF's.
@@ -1092,7 +1147,7 @@ class NodeFilesList(generics.ListAPIView, WaterButlerMixin, ListFilterMixin, Nod
         provider      string     id of provider e.g. "osfstorage", "s3", "googledrive".
                                  equivalent to addon_short_name on the OSF
         size          integer    size of file in bytes
-        extra         object     may contain additional data beyond what's describe here,
+        extra         object     may contain additional data beyond what's described here,
                                  depending on the provider
           version     integer    version number of file. will be 1 on initial upload
           downloads   integer    count of the number times the file has been downloaded
@@ -1123,16 +1178,31 @@ class NodeFilesList(generics.ListAPIView, WaterButlerMixin, ListFilterMixin, Nod
     found [here](/v2/#storage-providers).
 
         name          type               description
-        ---------------------------------------------------------------------------------
-        name          string             name of the file or folder; use for display
-        kind          string             "file" or "folder"
-        path          url path           unique path for this entity, used in "move" actions
-        size          integer            size of file in bytes, null for folders
-        provider      string             storage provider for this file. "osfstorage" if stored on the OSF.  Other
-                                         examples include "s3" for Amazon S3, "googledrive" for Google Drive, "box"
-                                         for Box.com.
-        last_touched  iso8601 timestamp  last time the metadata for the file was retrieved. only applies to non-OSF
-                                         storage providers.
+        ---------------------------------------------------------------------------------------------------
+        name              string             name of the file or folder; used for display
+        kind              string             "file" or "folder"
+        path              string             same as for corresponding WaterButler entity
+        materialized_path string             the unix-style path to the file relative to the provider root
+        size              integer            size of file in bytes, null for folders
+        provider          string             storage provider for this file. "osfstorage" if stored on the
+                                             OSF.  other examples include "s3" for Amazon S3, "googledrive"
+                                             for Google Drive, "box" for Box.com.
+        last_touched      iso8601 timestamp  last time the metadata for the file was retrieved. only
+                                             applies to non-OSF storage providers.
+        date_modified     iso8601 timestamp  timestamp of when this file was last updated*
+        date_created      iso8601 timestamp  timestamp of when this file was created*
+        extra             object             may contain additional data beyond what's described here,
+                                             depending on the provider
+          hashes          object
+            md5           string             md5 hash of file, null for folders
+            sha256        string             SHA-256 hash of file, null for folders
+
+    * A note on timestamps: for files stored in osfstorage, `date_created` refers to the time the file was
+    first uploaded to osfstorage, and `date_modified` is the time the file was last updated while in osfstorage.
+    Other providers may or may not provide this information, but if they do it will correspond to the provider's
+    semantics for created/modified times.  These timestamps may also be stale; metadata retrieved via the File Detail
+    endpoint is cached.  The `last_touched` field describes the last time the metadata was retrieved from the external
+    provider.  To force a metadata update, access the parent folder via its Node Files List endpoint.
 
     ##Links
 
@@ -1148,7 +1218,7 @@ class NodeFilesList(generics.ListAPIView, WaterButlerMixin, ListFilterMixin, Nod
     ###Get Info (*files, folders*)
 
         Method:   GET
-        URL:      links.info
+        URL:      /links/info
         Params:   <none>
         Success:  200 OK + file representation
 
@@ -1158,7 +1228,7 @@ class NodeFilesList(generics.ListAPIView, WaterButlerMixin, ListFilterMixin, Nod
     ###Download (*files*)
 
         Method:   GET
-        URL:      links.download
+        URL:      /links/download
         Params:   <none>
         Success:  200 OK + file body
 
@@ -1168,7 +1238,7 @@ class NodeFilesList(generics.ListAPIView, WaterButlerMixin, ListFilterMixin, Nod
     ###Create Subfolder (*folders*)
 
         Method:       PUT
-        URL:          links.new_folder
+        URL:          /links/new_folder
         Query Params: ?kind=folder&name={new_folder_name}
         Body:         <empty>
         Success:      201 Created + new folder representation
@@ -1182,7 +1252,7 @@ class NodeFilesList(generics.ListAPIView, WaterButlerMixin, ListFilterMixin, Nod
     ###Upload New File (*folders*)
 
         Method:       PUT
-        URL:          links.upload
+        URL:          /links/upload
         Query Params: ?kind=file&name={new_file_name}
         Body (Raw):   <file data (not form-encoded)>
         Success:      201 Created or 200 OK + new file representation
@@ -1196,7 +1266,7 @@ class NodeFilesList(generics.ListAPIView, WaterButlerMixin, ListFilterMixin, Nod
     ###Update Existing File (*file*)
 
         Method:       PUT
-        URL:          links.upload
+        URL:          /links/upload
         Query Params: ?kind=file
         Body (Raw):   <file data (not form-encoded)>
         Success:      200 OK + updated file representation
@@ -1208,7 +1278,7 @@ class NodeFilesList(generics.ListAPIView, WaterButlerMixin, ListFilterMixin, Nod
     ###Rename (*files, folders*)
 
         Method:        POST
-        URL:           links.move
+        URL:           /links/move
         Query Params:  <none>
         Body (JSON):   {
                         "action": "rename",
@@ -1223,7 +1293,7 @@ class NodeFilesList(generics.ListAPIView, WaterButlerMixin, ListFilterMixin, Nod
     ###Move & Copy (*files, folders*)
 
         Method:        POST
-        URL:           links.move
+        URL:           /links/move
         Query Params:  <none>
         Body (JSON):   {
                         // mandatory
@@ -1235,7 +1305,7 @@ class NodeFilesList(generics.ListAPIView, WaterButlerMixin, ListFilterMixin, Nod
                         "resource": {node_id},        // defaults to current {node_id}
                         "provider": {provider}        // defaults to current {provider}
                        }
-        Succes:        200 OK + new entity representation
+        Success:       200 OK or 201 Created + new entity representation
 
     Move and copy actions both use the same request structure, a POST to the `move` url, but with different values for
     the `action` body parameters.  The `path` parameter is also required and should be the OSF `path` attribute of the
@@ -1254,10 +1324,13 @@ class NodeFilesList(generics.ListAPIView, WaterButlerMixin, ListFilterMixin, Nod
     node and folder already extant on that provider.  Both `resource` and `provider` default to the current node and
     providers.
 
+    If a moved/copied file is overwriting an existing file, a 200 OK response will be returned.  Otherwise, a 201
+    Created will be returned.
+
     ###Delete (*file, folders*)
 
         Method:        DELETE
-        URL:           links.delete
+        URL:           /links/delete
         Query Params:  <none>
         Success:       204 No Content
 
@@ -1280,12 +1353,18 @@ class NodeFilesList(generics.ListAPIView, WaterButlerMixin, ListFilterMixin, Nod
         base_permissions.PermissionWithGetter(ContributorOrPublic, 'node'),
         base_permissions.PermissionWithGetter(ReadOnlyIfRegistration, 'node'),
         base_permissions.TokenHasScope,
+        ExcludeRetractions
     )
+
+    ordering = ('materialized_path',)  # default ordering
 
     serializer_class = FileSerializer
 
     required_read_scopes = [CoreScopes.NODE_FILE_READ]
     required_write_scopes = [CoreScopes.NODE_FILE_WRITE]
+
+    view_category = 'nodes'
+    view_name = 'node-files'
 
     def get_default_queryset(self):
         # Don't bother going to waterbutler for osfstorage
@@ -1305,18 +1384,21 @@ class NodeFilesList(generics.ListAPIView, WaterButlerMixin, ListFilterMixin, Nod
         return self.get_queryset_from_request()
 
 
-class NodeFileDetail(generics.RetrieveAPIView, WaterButlerMixin, NodeMixin):
+class NodeFileDetail(JSONAPIBaseView, generics.RetrieveAPIView, WaterButlerMixin, NodeMixin):
     permission_classes = (
         drf_permissions.IsAuthenticatedOrReadOnly,
         base_permissions.PermissionWithGetter(ContributorOrPublic, 'node'),
         base_permissions.PermissionWithGetter(ReadOnlyIfRegistration, 'node'),
         base_permissions.TokenHasScope,
+        ExcludeRetractions
     )
 
     serializer_class = FileSerializer
 
     required_read_scopes = [CoreScopes.NODE_FILE_READ]
     required_write_scopes = [CoreScopes.NODE_FILE_WRITE]
+    view_category = 'nodes'
+    view_name = 'node-file-detail'
 
     def get_object(self):
         fobj = self.fetch_from_waterbutler()
@@ -1342,18 +1424,18 @@ class NodeProvider(object):
         self.pk = node._id
 
 
-class NodeProvidersList(generics.ListAPIView, NodeMixin):
+class NodeProvidersList(JSONAPIBaseView, generics.ListAPIView, NodeMixin):
     """List of storage providers enabled for this node. *Read-only*.
 
     Users of the OSF may access their data on a [number of cloud-storage](/v2/#storage-providers) services that have
-    integratations with the OSF.  We call these "providers".  By default every node has access to the OSF-provided
+    integrations with the OSF.  We call these "providers".  By default every node has access to the OSF-provided
     storage but may use as many of the supported providers as desired.  This endpoint lists all of the providers that are
     configured for this node.  If you want to add more, you will need to do that in the Open Science Framework front end
     for now.
 
     In the OSF filesystem model, providers are treated as folders, but with special properties that distinguish them
     from regular folders.  Every provider folder is considered a root folder, and may not be deleted through the regular
-    file API.  To see the contents of the provider, issue a GET request to the `relationships.files.links.related.href`
+    file API.  To see the contents of the provider, issue a GET request to the `/relationships/files/links/related/href`
     attribute of the provider resource.  The `new_folder` and `upload` actions are handled by another service called
     WaterButler, whose response format differs slightly from the OSF's.
 
@@ -1380,7 +1462,7 @@ class NodeProvidersList(generics.ListAPIView, NodeMixin):
         provider      string     id of provider e.g. "osfstorage", "s3", "googledrive".
                                  equivalent to addon_short_name on the OSF
         size          integer    size of file in bytes
-        extra         object     may contain additional data beyond what's describe here,
+        extra         object     may contain additional data beyond what's described here,
                                  depending on the provider
           version     integer    version number of file. will be 1 on initial upload
           downloads   integer    count of the number times the file has been downloaded
@@ -1424,7 +1506,7 @@ class NodeProvidersList(generics.ListAPIView, NodeMixin):
     ###Create Subfolder (*folders*)
 
         Method:       PUT
-        URL:          links.new_folder
+        URL:          /links/new_folder
         Query Params: ?kind=folder&name={new_folder_name}
         Body:         <empty>
         Success:      201 Created + new folder representation
@@ -1438,7 +1520,7 @@ class NodeProvidersList(generics.ListAPIView, NodeMixin):
     ###Upload New File (*folders*)
 
         Method:       PUT
-        URL:          links.upload
+        URL:          /links/upload
         Query Params: ?kind=file&name={new_file_name}
         Body (Raw):   <file data (not form-encoded)>
         Success:      201 Created or 200 OK + new file representation
@@ -1459,6 +1541,7 @@ class NodeProvidersList(generics.ListAPIView, NodeMixin):
     permission_classes = (
         drf_permissions.IsAuthenticatedOrReadOnly,
         ContributorOrPublic,
+        ExcludeRetractions,
         base_permissions.TokenHasScope,
     )
 
@@ -1466,6 +1549,8 @@ class NodeProvidersList(generics.ListAPIView, NodeMixin):
     required_write_scopes = [CoreScopes.NODE_FILE_WRITE]
 
     serializer_class = NodeProviderSerializer
+    view_category = 'nodes'
+    view_name = 'node-providers'
 
     def get_provider_item(self, provider):
         return NodeProvider(provider, self.get_node())
@@ -1479,12 +1564,235 @@ class NodeProvidersList(generics.ListAPIView, NodeMixin):
             and addon.complete
         ]
 
+class NodeAlternativeCitationsList(JSONAPIBaseView, generics.ListCreateAPIView, NodeMixin):
+    """List of alternative citations for a project.
 
-class NodeCommentsList(generics.ListCreateAPIView, ODMFilterMixin, NodeMixin):
+    ##Actions
+
+    ###Create Alternative Citation
+
+        Method:         POST
+        Body (JSON):    {
+                            "data": {
+                                "type": "citations",    # required
+                                "attributes": {
+                                    "name": {name},     # mandatory
+                                    "text": {text}      # mandatory
+                                }
+                            }
+                        }
+        Success:        201 Created + new citation representation
+    """
+
+    permission_classes = (
+        drf_permissions.IsAuthenticatedOrReadOnly,
+        AdminOrPublic,
+        ReadOnlyIfRegistration,
+        base_permissions.TokenHasScope
+    )
+
+    required_read_scopes = [CoreScopes.NODE_CITATIONS_READ]
+    required_write_scopes = [CoreScopes.NODE_CITATIONS_WRITE]
+
+    serializer_class = NodeAlternativeCitationSerializer
+    view_category = 'nodes'
+    view_name = 'alternative-citations'
+
+    def get_queryset(self):
+        return self.get_node().alternative_citations
+
+class NodeAlternativeCitationDetail(JSONAPIBaseView, generics.RetrieveUpdateDestroyAPIView, NodeMixin):
+    """Details about an alternative citations for a project.
+
+    ##Actions
+
+    ###Update Alternative Citation
+
+        Method:         PUT
+        Body (JSON):    {
+                            "data": {
+                                "type": "citations",    # required
+                                "id": {{id}}            # required
+                                "attributes": {
+                                    "name": {name},     # mandatory
+                                    "text": {text}      # mandatory
+                                }
+                            }
+                        }
+        Success:        200 Ok + updated citation representation
+
+    ###Delete Alternative Citation
+
+        Method:         DELETE
+        Success:        204 No content
+    """
+
+    permission_classes = (
+        drf_permissions.IsAuthenticatedOrReadOnly,
+        AdminOrPublic,
+        ReadOnlyIfRegistration,
+        base_permissions.TokenHasScope
+    )
+
+    required_read_scopes = [CoreScopes.NODE_CITATIONS_READ]
+    required_write_scopes = [CoreScopes.NODE_CITATIONS_WRITE]
+
+    serializer_class = NodeAlternativeCitationSerializer
+    view_category = 'nodes'
+    view_name = 'alternative-citation-detail'
+
+    def get_object(self):
+        try:
+            return self.get_node().alternative_citations.find(Q('_id', 'eq', str(self.kwargs['citation_id'])))[0]
+        except IndexError:
+            raise NotFound
+
+    def perform_destroy(self, instance):
+        self.get_node().remove_citation(get_user_auth(self.request), instance, save=True)
+
+class NodeLogList(JSONAPIBaseView, generics.ListAPIView, NodeMixin, ODMFilterMixin):
+    """List of Logs associated with a given Node. *Read-only*.
+
+    <!--- Copied Description from LogList -->
+
+    Paginated list of Logs ordered by their `date`. This includes the Logs of the specified Node as well as the logs of that Node's children that the current user has access to.
+
+    Note that if an anonymous view_only key is being used, the user relationship will not be exposed.
+
+    On the front end, logs show record and show actions done on the OSF. The complete list of loggable actions (in the format {identifier}: {description}) is as follows:
+
+    * 'project_created': A Node is created
+    * 'project_registered': A Node is registered
+    * 'project_deleted': A Node is deleted
+    * 'created_from': A Node is created using an existing Node as a template
+    * 'pointer_created': A Pointer is created
+    * 'pointer_forked': A Pointer is forked
+    * 'pointer_removed': A Pointer is removed
+    ---
+    * 'made_public': A Node is made public
+    * 'made_private': A Node is made private
+    * 'tag_added': A tag is added to a Node
+    * 'tag_removed': A tag is removed from a Node
+    * 'edit_title': A Node's title is changed
+    * 'edit_description': A Node's description is changed
+    * 'updated_fields': One or more of a Node's fields are changed
+    * 'external_ids_added': An external identifier is added to a Node (e.g. DOI, ARK)
+    ---
+    * 'contributor_added': A Contributor is added to a Node
+    * 'contributor_removed': A Contributor is removed from a Node
+    * 'contributors_reordered': A Contributor's position is a Node's biliography is changed
+    * 'permissions_update': A Contributor's permissions on a Node are changed
+    * 'made_contributor_visible': A Contributor is made bibliographically visible on a Node
+    * 'made_contributor_invisible': A Contributor is made bibliographically invisible on a Node
+    ---
+    * 'wiki_updated': A Node's wiki is updated
+    * 'wiki_deleted': A Node's wiki is deleted
+    * 'wiki_renamed': A Node's wiki is renamed
+    * 'made_wiki_public': A Node's wiki is made public
+    * 'made_wiki_private': A Node's wiki is made private
+    ---
+    * 'addon_added': An add-on is linked to a Node
+    * 'addon_removed': An add-on is unlinked from a Node
+    * 'addon_file_moved': A File in a Node's linked add-on is moved
+    * 'addon_file_copied': A File in a Node's linked add-on is copied
+    * 'addon_file_renamed': A File in a Node's linked add-on is renamed
+    * 'folder_created': A Folder is created in a Node's linked add-on
+    * 'file_added': A File is added to a Node's linked add-on
+    * 'file_updated': A File is updated on a Node's linked add-on
+    * 'file_removed': A File is removed from a Node's linked add-on
+    * 'file_restored': A File is restored in a Node's linked add-on
+    ---
+    * 'comment_added': A Comment is added to some item
+    * 'comment_removed': A Comment is removed from some item
+    * 'comment_updated': A Comment is updated on some item
+    ---
+    * 'embargo_initiated': An embargoed Registration is proposed on a Node
+    * 'embargo_approved': A proposed Embargo of a Node is approved
+    * 'embargo_cancelled': A proposed Embargo of a Node is cancelled
+    * 'embargo_completed': A proposed Embargo of a Node is completed
+    * 'retraction_initiated': A Retraction of a Registration is proposed
+    * 'retraction_approved': A Retraction of a Registration is approved
+    * 'retraction_cancelled': A Retraction of a Registration is cancelled
+    * 'registration_initiated': A Registration of a Node is proposed
+    * 'registration_approved': A proposed Registration is approved
+    * 'registration_cancelled': A proposed Registration is cancelled
+    ---
+    * 'node_created': A Node is created (_deprecated_)
+    * 'node_forked': A Node is forked (_deprecated_)
+    * 'node_removed': A Node is dele (_deprecated_)
+
+   ##Log Attributes
+
+    <!--- Copied Attributes from LogList -->
+
+    OSF Log entities have the "logs" `type`.
+
+        name           type                   description
+        ----------------------------------------------------------------------------
+        date           iso8601 timestamp      timestamp of Log creation
+        action         string                 Log action (see list above)
+
+    ##Relationships
+
+    ###Nodes
+
+    A list of all Nodes this Log is added to.
+
+    ###User
+
+    The user who performed the logged action.
+
+    ##Links
+
+    See the [JSON-API spec regarding pagination](http://jsonapi.org/format/1.0/#fetching-pagination).
+
+    ##Actions
+
+    ##Query Params
+
+    <!--- Copied Query Params from LogList -->
+
+    Logs may be filtered by their `action` and `date`.
+
+    #This Request/Response
+
+    """
+
+    serializer_class = NodeLogSerializer
+    view_category = 'nodes'
+    view_name = 'node-logs'
+
+    required_read_scopes = [CoreScopes.NODE_LOG_READ]
+    required_write_scopes = [CoreScopes.NULL]
+
+    log_lookup_url_kwarg = 'node_id'
+
+    ordering = ('-date', )
+
+    permission_classes = (
+        drf_permissions.IsAuthenticatedOrReadOnly,
+        ContributorOrPublic,
+        base_permissions.TokenHasScope,
+        ExcludeRetractions
+    )
+
+    def get_default_odm_query(self):
+        auth = get_user_auth(self.request)
+        query = self.get_node().get_aggregate_logs_query(auth)
+        return query
+
+    def get_queryset(self):
+        queryset = NodeLog.find(self.get_query_from_request())
+        return queryset
+
+
+class NodeCommentsList(JSONAPIBaseView, generics.ListCreateAPIView, ODMFilterMixin, NodeMixin):
     """List of comments on a node. *Writeable*.
 
     Paginated list of comments ordered by their `date_created.` Each resource contains the full representation of the
     comment, meaning additional requests to an individual comment's detail view are not necessary.
+
+    Note that if an anonymous view_only key is being used, the user relationship will not be exposed.
 
     ###Permissions
 
@@ -1503,6 +1811,9 @@ class NodeCommentsList(generics.ListCreateAPIView, ODMFilterMixin, NodeMixin):
         date_modified  iso8601 timestamp  timestamp when the comment was last updated
         modified       boolean            has this comment been edited?
         deleted        boolean            is this comment deleted?
+        is_abuse       boolean            has this comment been reported by the current user?
+        has_children   boolean            does this comment have replies?
+        can_edit       boolean            can the current user edit this comment?
 
     ##Links
 
@@ -1513,23 +1824,34 @@ class NodeCommentsList(generics.ListCreateAPIView, ODMFilterMixin, NodeMixin):
     ###Create
 
         Method:        POST
-        URL:           links.self
+        URL:           /links/self
         Query Params:  <none>
         Body (JSON):   {
                          "data": {
                            "type": "comments",   # required
                            "attributes": {
                              "content":       {content},        # mandatory
-                             "deleted":       {is_deleted},     # optional
+                           },
+                           "relationships": {
+                             "target": {
+                               "data": {
+                                  "type": {target type}         # mandatory
+                                  "id": {target._id}            # mandatory
+                               }
+                             }
                            }
                          }
                        }
         Success:       201 CREATED + comment representation
 
-    To create a comment on this node, issue a POST request against this endpoint. The `content` field is mandatory.
-    The `deleted` field is optional and defaults to `False`. If the comment creation is successful the API will return
+    To create a comment on this node, issue a POST request against this endpoint. The comment target id and target type
+    must be specified. To create a comment on the node overview page, the target `type` would be "nodes" and the `id`
+    would be the node id. To reply to a comment on this node, the target `type` would be "comments" and the `id` would
+    be the id of the comment to reply to. The `content` field is mandatory.
+
+    If the comment creation is successful the API will return
     a 201 response with the representation of the new comment in the body. For the new comment's canonical URL, see the
-    `links.self` field of the response.
+    `/links/self` field of the response.
 
     ##Query Params
 
@@ -1545,31 +1867,198 @@ class NodeCommentsList(generics.ListCreateAPIView, ODMFilterMixin, NodeMixin):
     operators include 'gt' (greater than), 'gte'(greater than or equal to), 'lt' (less than) and 'lte'
     (less than or equal to). The date must be in the format YYYY-MM-DD and the time is optional.
 
+    + `filter[target]=target_id` -- filter comments based on their target id.
+
+    The list of comments can be filtered by target id. For example, to get all comments with target = project,
+    the target_id would be the project_id.
+
     #This Request/Response
     """
     permission_classes = (
         drf_permissions.IsAuthenticatedOrReadOnly,
         CanCommentOrPublic,
         base_permissions.TokenHasScope,
+        ExcludeRetractions
     )
 
     required_read_scopes = [CoreScopes.NODE_COMMENTS_READ]
     required_write_scopes = [CoreScopes.NODE_COMMENTS_WRITE]
 
     serializer_class = CommentSerializer
+    view_category = 'nodes'
+    view_name = 'node-comments'
 
     ordering = ('-date_created', )  # default ordering
 
     # overrides ODMFilterMixin
     def get_default_odm_query(self):
-        return Q('target', 'eq', self.get_node())
+        return Q('node', 'eq', self.get_node()) & Q('root_target', 'ne', None)
 
     def get_queryset(self):
+        commented_files = []
+        comments = Comment.find(self.get_query_from_request())
+        for comment in comments:
+            # Deleted root targets still appear as tuples in the database,
+            # but need to be None in order for the query to be correct.
+            if comment.root_target is None:
+                comment.root_target = None
+                comment.save()
+
+            if isinstance(comment.root_target, StoredFileNode) and comment.root_target not in commented_files:
+                commented_files.append(comment.root_target)
+
+        for root_target in commented_files:
+            if root_target.provider == 'dropbox':
+                root_target = DropboxFile.load(root_target._id)
+
+            if root_target.provider == 'osfstorage':
+                try:
+                    StoredFileNode.find(
+                        Q('node', 'eq', self.get_node()._id) &
+                        Q('_id', 'eq', root_target._id) &
+                        Q('is_file', 'eq', True)
+                    )
+                except NoResultsFound:
+                    Comment.update(Q('root_target', 'eq', root_target), data={'root_target': None})
+                    del root_target.node.commented_files[root_target._id]
+
+            else:
+                url = waterbutler_api_url_for(self.get_node()._id, root_target.provider, root_target.path, meta=True)
+                waterbutler_request = requests.get(
+                    url,
+                    cookies=self.request.COOKIES,
+                    headers={'Authorization': self.request.META.get('HTTP_AUTHORIZATION')},
+                )
+                if waterbutler_request.status_code == 404:
+                    Comment.update(Q('root_target', 'eq', root_target), data={'root_target': None})
+
         return Comment.find(self.get_query_from_request())
+
+    def get_serializer_class(self):
+        if self.request.method == 'POST':
+            return CommentCreateSerializer
+        else:
+            return CommentSerializer
+
+    # overrides ListCreateAPIView
+    def get_parser_context(self, http_request):
+        """
+        Tells parser that we are creating a relationship
+        """
+        res = super(NodeCommentsList, self).get_parser_context(http_request)
+        res['is_relationship'] = True
+        return res
 
     def perform_create(self, serializer):
         node = self.get_node()
         serializer.validated_data['user'] = self.request.user
-        serializer.validated_data['target'] = node
         serializer.validated_data['node'] = node
         serializer.save()
+
+class NodeInstitutionDetail(JSONAPIBaseView, generics.RetrieveAPIView, NodeMixin):
+    """ Detail of the one primary_institution a node has, if any. Returns NotFound
+    if the node does not have a primary_instituion.
+
+    ##Attributes
+
+    OSF Institutions have the "institutions" `type`.
+
+        name           type               description
+        -------------------------------------------------------------------------
+        name           string             title of the institution
+        id             string             unique identifier in the OSF
+        logo_path      string             a path to the institution's static logo
+
+
+
+    #This Request/Response
+
+    """
+    permission_classes = (
+        drf_permissions.IsAuthenticatedOrReadOnly,
+        base_permissions.TokenHasScope,
+        AdminOrPublic
+    )
+
+    required_read_scopes = [CoreScopes.NODE_BASE_READ, CoreScopes.INSTITUTION_READ]
+    required_write_scopes = [CoreScopes.NULL]
+    serializer_class = InstitutionSerializer
+
+    model = Institution
+    view_category = 'nodes'
+    view_name = 'node-institution-detail'
+
+    # overrides RetrieveAPIView
+    def get_object(self):
+        node = self.get_node()
+        if not node.primary_institution:
+            raise NotFound
+        return node.primary_institution
+
+
+class NodeInstitutionRelationship(JSONAPIBaseView, generics.RetrieveUpdateAPIView, NodeMixin):
+    """ Relationship Endpoint for Node -> Instituion Relationship
+
+    Used to set the primary_institution of a node to an institution
+
+    ##Actions
+
+    ###Create
+
+        Method:        PUT || PATCH
+        URL:           /links/self
+        Query Params:  <none>
+        Body (JSON):   {
+                         "data": {
+                           "type": "institutions",   # required
+                           "id": <institution_id>   # required
+                         }
+                       }
+        Success:       200
+
+    This requires both admin permission on the node, and for the user that is
+    making the request to be affiliated with the institution (`User.affiliated_institutions`)
+
+    ###Destroy
+
+        Method:        PUT || PATCH
+        URL:           /links/self
+        Query Params:  <none>
+        Body (JSON):   {
+                         "data": {
+                           null
+                         }
+                       }
+        Success:       204
+
+    This requires admin permission on the node.
+    """
+    permission_classes = (
+        drf_permissions.IsAuthenticatedOrReadOnly,
+        base_permissions.TokenHasScope,
+        AdminOrPublic
+    )
+    required_read_scopes = [CoreScopes.NODE_BASE_READ, CoreScopes.INSTITUTION_READ]
+    required_write_scopes = [CoreScopes.NODE_BASE_WRITE]
+    serializer_class = NodeInstitutionRelationshipSerializer
+    parser_classes = (JSONAPIOnetoOneRelationshipParser, JSONAPIOnetoOneRelationshipParserForRegularJSON, )
+
+    view_category = 'nodes'
+    view_name = 'node-relationships-institution'
+
+    # overrides RetrieveAPIView
+    def get_object(self):
+        return self.get_node()
+
+    def update(self, request, *args, **kwargs):
+        # same as drf's update method from the update mixin, with the addition of
+        # returning a 204 when successfully deletes relationship with PUT/PATCH
+        partial = kwargs.pop('partial', False)
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+        inst = request.data.get('id', None)
+        if not inst:
+            return Response(status=HTTP_204_NO_CONTENT)
+        return Response(serializer.data)

@@ -1,14 +1,16 @@
+import requests
+
 from rest_framework import generics, permissions as drf_permissions
 from rest_framework.exceptions import NotFound, ValidationError, PermissionDenied
+from rest_framework.status import is_server_error
 
 from modularodm import Q
 from modularodm.exceptions import NoResultsFound
 
-from api.base.exceptions import Gone
-from api.base.filters import ODMFilterMixin
+from api.base.exceptions import Gone, ServiceUnavailableError
 from api.base import permissions as base_permissions
+from api.base.views import JSONAPIBaseView
 from api.comments.permissions import (
-    CanCommentOrPublic,
     CommentDetailPermissions,
     CommentReportsPermissions
 )
@@ -19,8 +21,13 @@ from api.comments.serializers import (
     CommentReportDetailSerializer,
     CommentReport
 )
+from framework.auth.core import Auth
 from framework.auth.oauth_scopes import CoreScopes
+from framework.exceptions import PermissionsError
 from website.project.model import Comment
+from website.files.models import StoredFileNode
+from website.files.models.dropbox import DropboxFile
+from website.util import waterbutler_api_url_for
 
 
 class CommentMixin(object):
@@ -34,9 +41,52 @@ class CommentMixin(object):
     def get_comment(self, check_permissions=True):
         pk = self.kwargs[self.comment_lookup_url_kwarg]
         try:
-            comment = Comment.find_one(Q('_id', 'eq', pk))
+            comment = Comment.find_one(Q('_id', 'eq', pk) & Q('root_target', 'ne', None))
         except NoResultsFound:
             raise NotFound
+
+        # Deleted root targets still appear as tuples in the database and are included in
+        # the above query, requiring an additional check
+        if comment.root_target is None:
+            raise NotFound
+
+        if isinstance(comment.root_target, StoredFileNode):
+            root_target = comment.root_target
+            if root_target.provider == 'osfstorage':
+                try:
+                    StoredFileNode.find(
+                        Q('node', 'eq', comment.node._id) &
+                        Q('_id', 'eq', root_target._id) &
+                        Q('is_file', 'eq', True)
+                    )
+                except NoResultsFound:
+                    Comment.update(Q('root_target', 'eq', root_target), data={'root_target': None})
+                    del comment.node.commented_files[root_target._id]
+                    raise NotFound
+            else:
+                if root_target.provider == 'dropbox':
+                    root_target = DropboxFile.load(comment.root_target._id)
+                url = waterbutler_api_url_for(comment.node._id, root_target.provider, root_target.path, meta=True)
+                waterbutler_request = requests.get(
+                    url,
+                    cookies=self.request.COOKIES,
+                    headers={'Authorization': self.request.META.get('HTTP_AUTHORIZATION')},
+                )
+
+                if waterbutler_request.status_code == 401:
+                    raise PermissionDenied
+
+                if waterbutler_request.status_code == 404:
+                    Comment.update(Q('root_target', 'eq', root_target), data={'root_target': None})
+                    raise NotFound
+
+                if is_server_error(waterbutler_request.status_code):
+                    raise ServiceUnavailableError(detail='Could not retrieve files information at this time.')
+
+                try:
+                    waterbutler_request.json()['data']
+                except KeyError:
+                    raise ServiceUnavailableError(detail='Could not retrieve files information at this time.')
 
         if check_permissions:
             # May raise a permission denied
@@ -44,104 +94,7 @@ class CommentMixin(object):
         return comment
 
 
-class CommentRepliesList(generics.ListCreateAPIView, CommentMixin, ODMFilterMixin):
-    """List of replies to a comment. *Writeable*.
-
-    Paginated list of comment replies ordered by their `date_created.` Each resource contains the full representation
-    of the comment, meaning additional requests to an individual comment's detail view are not necessary.
-
-    ###Permissions
-
-    Comments on public nodes are given read-only access to everyone. If the node comment-level is "private,"
-    only contributors have permission to comment. If the comment-level is "public" any logged-in OSF user can comment.
-    Comments on private nodes are only visible to contributors and administrators on the parent node.
-
-    ##Attributes
-
-    OSF comment reply entities have the "comments" `type`.
-
-        name           type               description
-        ---------------------------------------------------------------------------------
-        content        string             content of the comment
-        date_created   iso8601 timestamp  timestamp that the comment was created
-        date_modified  iso8601 timestamp  timestamp when the comment was last updated
-        modified       boolean            has this comment been edited?
-        deleted        boolean            is this comment deleted?
-
-    ##Links
-
-    See the [JSON-API spec regarding pagination](http://jsonapi.org/format/1.0/#fetching-pagination).
-
-    ##Actions
-
-    ###Create
-
-        Method:        POST
-        URL:           links.self
-        Query Params:  <none>
-        Body (JSON):   {
-                         "data": {
-                           "type": "comments",   # required
-                           "attributes": {
-                             "content":       {content},        # mandatory
-                             "deleted":       {is_deleted},     # optional
-                           }
-                         }
-                       }
-        Success:       201 CREATED + comment representation
-
-    To create a comment reply, issue a POST request against this endpoint.  The `content` field is mandatory. The
-    `deleted` field is optional and defaults to `False`. If the comment reply creation is successful the API will return
-    a 201 response with the representation of the new comment reply in the body. For the new comment reply's canonical
-    URL, see the `links.self` field of the response.
-
-    ##Query Params
-
-    + `filter[deleted]=True|False` -- filter comment replies based on whether or not they are deleted.
-
-    The list of comment replies includes deleted comments by default. The `deleted` field is a boolean and can be
-    filtered using truthy values, such as `true`, `false`, `0`, or `1`. Note that quoting `true` or `false` in
-    the query will cause the match to fail regardless.
-
-    + `filter[date_created][comparison_operator]=YYYY-MM-DDTH:M:S` -- filter comment replies based on date created.
-
-    Comment replies can also be filtered based on their `date_created` and `date_modified` fields. Possible comparison
-    operators include 'gt' (greater than), 'gte'(greater than or equal to), 'lt' (less than) and 'lte'
-    (less than or equal to). The date must be in the format YYYY-MM-DD and the time is optional.
-
-    #This Request/Response
-    """
-
-    permission_classes = (
-        drf_permissions.IsAuthenticatedOrReadOnly,
-        CanCommentOrPublic,
-        base_permissions.TokenHasScope,
-    )
-
-    required_read_scopes = [CoreScopes.NODE_COMMENTS_READ]
-    required_write_scopes = [CoreScopes.NODE_COMMENTS_WRITE]
-
-    serializer_class = CommentSerializer
-
-    ordering = ('-date_created', )  # default ordering
-
-    # overrides ODMFilterMixin
-    def get_default_odm_query(self):
-        return Q('target', 'eq', self.get_comment())
-
-    def get_queryset(self):
-        return Comment.find(self.get_query_from_request())
-
-    # overrides ListCreateAPIView
-    def perform_create(self, serializer):
-        target = self.get_comment()
-        serializer.validated_data['user'] = self.request.user
-        serializer.validated_data['target'] = target
-        serializer.validated_data['node'] = target.node
-        serializer.save()
-
-
-class CommentDetail(generics.RetrieveUpdateAPIView, CommentMixin):
+class CommentDetail(JSONAPIBaseView, generics.RetrieveUpdateDestroyAPIView, CommentMixin):
     """Details about a specific comment. *Writeable*.
 
     ###Permissions
@@ -149,6 +102,8 @@ class CommentDetail(generics.RetrieveUpdateAPIView, CommentMixin):
     Comments on public nodes are given read-only access to everyone. Comments on private nodes are only visible
     to contributors and administrators on the parent node. Only the user who created the comment has permission
     to edit and delete the comment.
+
+    Note that if an anonymous view_only key is being used, the user relationship will not be exposed.
 
     ##Attributes
 
@@ -161,6 +116,9 @@ class CommentDetail(generics.RetrieveUpdateAPIView, CommentMixin):
         date_modified  iso8601 timestamp  timestamp when the comment was last updated
         modified       boolean            has this comment been edited?
         deleted        boolean            is this comment deleted?
+        is_abuse       boolean            has this comment been reported by the current user?
+        has_children   boolean            does this comment have replies?
+        can_edit       boolean            can the current user edit this comment?
 
     ##Relationships
 
@@ -193,7 +151,7 @@ class CommentDetail(generics.RetrieveUpdateAPIView, CommentMixin):
     ###Update
 
         Method:        PUT / PATCH
-        URL:           links.self
+        URL:           /links/self
         Query Params:  <none>
         Body (JSON):   {
                          "data": {
@@ -207,13 +165,21 @@ class CommentDetail(generics.RetrieveUpdateAPIView, CommentMixin):
                        }
         Success:       200 OK + comment representation
 
-    To update a comment, issue either a PUT or a PATCH request against the `links.self` URL.  The `content`
+    To update a comment, issue either a PUT or a PATCH request against the `/links/self` URL.  The `content`
     and `deleted` fields are mandatory if you PUT and optional if you PATCH. Non-string values will be accepted and
     stringified, but we make no promises about the stringification output.  So don't do that.
 
-    To delete a comment, issue a PATCH request against the `links.self` URL, with `deleted: True`:
+    To restore a deleted comment, issue a PATCH request against the `/links/self` URL, with `deleted: False`.
 
-    To undelete a comment, issue a PATCH request against the `links.self` URL, with `deleted: False`.
+    ###Delete
+
+        Method:        DELETE
+        URL:           /links/self
+        Query Params:  <none>
+        Success:       204 No Content
+
+    To delete a comment send a DELETE request to the `/links/self` URL.  Nothing will be returned in the response
+    body. Attempting to delete an already deleted comment will result in a 400 Bad Request response.
 
     ##Query Params
 
@@ -232,13 +198,25 @@ class CommentDetail(generics.RetrieveUpdateAPIView, CommentMixin):
     required_write_scopes = [CoreScopes.NODE_COMMENTS_WRITE]
 
     serializer_class = CommentDetailSerializer
+    view_category = 'comments'
+    view_name = 'comment-detail'
 
     # overrides RetrieveAPIView
     def get_object(self):
         return self.get_comment()
 
+    def perform_destroy(self, instance):
+        auth = Auth(self.request.user)
+        if instance.is_deleted:
+            raise ValidationError('Comment already deleted.')
+        else:
+            try:
+                instance.delete(auth, save=True)
+            except PermissionsError:
+                raise PermissionDenied('Not authorized to delete this comment.')
 
-class CommentReportsList(generics.ListCreateAPIView, CommentMixin):
+
+class CommentReportsList(JSONAPIBaseView, generics.ListCreateAPIView, CommentMixin):
     """List of reports made for a comment. *Writeable*.
 
     Paginated list of reports for a comment. Each resource contains the full representation of the
@@ -267,7 +245,7 @@ class CommentReportsList(generics.ListCreateAPIView, CommentMixin):
     ###Create
 
         Method:        POST
-        URL:           links.self
+        URL:           /links/self
         Query Params:  <none>
         Body (JSON):   {
                          "data": {
@@ -283,7 +261,7 @@ class CommentReportsList(generics.ListCreateAPIView, CommentMixin):
     To create a report for this comment, issue a POST request against this endpoint. The `category` field is mandatory,
     and must be one of the following: "spam", "hate" or "violence" . The `message` field is optional. If the comment
     report creation is successful the API will return a 201 response with the representation of the new comment report
-    in the body. For the new comment report's canonical URL, see the `links.self` field of the response.
+    in the body. For the new comment report's canonical URL, see the `/links/self` field of the response.
 
     ##Query Params
 
@@ -302,6 +280,9 @@ class CommentReportsList(generics.ListCreateAPIView, CommentMixin):
 
     serializer_class = CommentReportSerializer
 
+    view_category = 'comments'
+    view_name = 'comment-reports'
+
     def get_queryset(self):
         user_id = self.request.user._id
         comment = self.get_comment()
@@ -313,7 +294,7 @@ class CommentReportsList(generics.ListCreateAPIView, CommentMixin):
         return serialized_reports
 
 
-class CommentReportDetail(generics.RetrieveUpdateDestroyAPIView, CommentMixin):
+class CommentReportDetail(JSONAPIBaseView, generics.RetrieveUpdateDestroyAPIView, CommentMixin):
     """Details about a specific comment report. *Writeable*.
 
     ###Permissions
@@ -338,7 +319,7 @@ class CommentReportDetail(generics.RetrieveUpdateDestroyAPIView, CommentMixin):
     ###Update
 
         Method:        PUT / PATCH
-        URL:           links.self
+        URL:           /links/self
         Query Params:  <none>
         Body (JSON):   {
                          "data": {
@@ -359,11 +340,11 @@ class CommentReportDetail(generics.RetrieveUpdateDestroyAPIView, CommentMixin):
 
     ###Delete
         Method:        DELETE
-        URL:           links.self
+        URL:           /links/self
         Query Params:  <none>
         Success:       204 + No content
 
-    To delete a comment report, issue a DELETE request against `links.self`.  A successful delete will return a
+    To delete a comment report, issue a DELETE request against `/links/self`.  A successful delete will return a
     204 No Content response.
 
     ##Query Params
@@ -382,6 +363,8 @@ class CommentReportDetail(generics.RetrieveUpdateDestroyAPIView, CommentMixin):
     required_write_scopes = [CoreScopes.COMMENT_REPORTS_WRITE]
 
     serializer_class = CommentReportDetailSerializer
+    view_category = 'comments'
+    view_name = 'report-detail'
 
     # overrides RetrieveUpdateDestroyAPIView
     def get_object(self):

@@ -2,7 +2,7 @@
 """Consolidates all necessary models from the framework and website packages.
 """
 
-from framework.auth.core import User
+from framework.auth.core import User, Institution
 from framework.guid.model import Guid, BlacklistGuid
 from framework.sessions.model import Session
 
@@ -11,7 +11,8 @@ from website.project.model import (
     Tag, WatchConfig, MetaSchema, Pointer,
     Comment, PrivateLink, MetaData,
     Retraction, Embargo, RegistrationApproval,
-    Sanction
+    AlternativeCitation,
+    DraftRegistrationApproval, DraftRegistration,
 )
 from website.oauth.models import ApiOAuth2Application, ExternalAccount, ApiOAuth2PersonalToken
 from website.identifiers.model import Identifier
@@ -29,15 +30,17 @@ from website.project.licenses import NodeLicense, NodeLicenseRecord
 
 # All models
 MODELS = (
-    User, ApiOAuth2Application, ApiOAuth2PersonalToken, Node,
+    User, Institution,
+    ApiOAuth2Application, ApiOAuth2PersonalToken, Node,
     NodeLog, StoredFileNode, TrashedFileNode, FileVersion,
     Tag, WatchConfig, Session, Guid, MetaSchema, Pointer,
     MailRecord, Comment, PrivateLink, MetaData, Conference,
     NotificationSubscription, NotificationDigest, CitationStyle,
     CitationStyle, ExternalAccount, Identifier,
     Embargo, Retraction, RegistrationApproval,
-    ArchiveJob, ArchiveTarget, BlacklistGuid, Sanction,
-    QueuedMail,
+    ArchiveJob, ArchiveTarget, BlacklistGuid,
+    QueuedMail, AlternativeCitation,
+    DraftRegistration, DraftRegistrationApproval,
     NodeLicense, NodeLicenseRecord
 )
 

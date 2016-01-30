@@ -5,10 +5,16 @@
 <%def name="container_class()">container-xxl</%def>
 
 <%def name="title()">${file_name | h}</%def>
+
+% if (user['can_comment'] or node['has_comments']) and allow_comments:
+    <%include file="include/comment_pane_template.mako"/>
+% endif
+
 <div class="row">
   <div class="col-sm-5">
     <h2 class="break-word">
-      ${file_name | h}
+      ## Split file name into two parts: with and without extension
+      ${file_name_title | h}<span id="file-ext">${file_name_ext | h}</span>
       % if file_revision:
         <small>&nbsp;${file_revision | h}</small>
       % endif
@@ -178,6 +184,7 @@
             safeName: ${ file_name | h, sjson},
             materializedPath: ${ materialized_path | sjson, n },
             file_tags: ${file_tags if file_tags else False| sjson, n},
+            id: ${file_id | sjson, n},
           urls: {
         %if error is None:
               render: ${ urls['render'] | sjson, n },

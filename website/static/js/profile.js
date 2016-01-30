@@ -21,7 +21,8 @@ var socialRules = {
     linkedIn: /.*\/?(in\/.*|profile\/.*|pub\/.*)/i,
     impactStory: /impactstory\.org\/([\w\.-]+)/i,
     github: /github\.com\/(\w+)/i,
-    yo: /yo\.com\/(\w+)/i
+    researchGate: /researchgate\.net\/profile\/(\w+)/i,
+    academia: /(\w+)\.academia\.edu\/(\w+)/i
 };
 
 var cleanByRule = function(rule) {
@@ -537,6 +538,19 @@ var SocialViewModel = function(urls, modes) {
         ko.observable().extend({trimmed: true, cleanup: cleanByRule(socialRules.github)}),
         self, 'github', 'https://github.com/'
     );
+    self.researchGate = extendLink(
+        ko.observable().extend({trimmed: true, cleanup: cleanByRule(socialRules.researchGate)}),
+        self, 'researchGate', 'https://researchgate.net/profile/'
+    );
+
+    self.academiaInstitution = extendLink(
+        ko.observable().extend({trimmed: true, cleanup: cleanByRule(socialRules.academia)}),
+        self, 'academiaInstitution', 'https://'
+    );
+    self.academiaProfileID = extendLink(
+        ko.observable().extend({trimmed: true, cleanup: cleanByRule(socialRules.academia)}),
+        self, 'academiaProfileID', '.academia.edu/'
+    );
 
     self.yo = extendLink(
         ko.observable().extend({trimmed: true, cleanup: cleanByRule(socialRules.yo)}),
@@ -552,6 +566,9 @@ var SocialViewModel = function(urls, modes) {
         self.linkedIn,
         self.impactStory,
         self.github,
+        self.researchGate,
+        self.academiaInstitution,
+        self.academiaProfileID,
         self.yo
     ];
 
@@ -570,7 +587,9 @@ var SocialViewModel = function(urls, modes) {
             {label: 'Yo', text: self.yo(), value: self.yo.url()},
             {label: 'LinkedIn', text: self.linkedIn(), value: self.linkedIn.url()},
             {label: 'ImpactStory', text: self.impactStory(), value: self.impactStory.url()},
-            {label: 'Google Scholar', text: self.scholar(), value: self.scholar.url()}
+            {label: 'Google Scholar', text: self.scholar(), value: self.scholar.url()},
+            {label: 'ResearchGate', text: self.researchGate(), value: self.researchGate.url()},
+            {label: 'Academia', text: self.academiaInstitution() + '.academia.edu/' + self.academiaProfileID(), value: self.academiaInstitution.url() + self.academiaProfileID.url()}
         ];
     });
 
@@ -592,7 +611,7 @@ var SocialViewModel = function(urls, modes) {
             ensureHttp: true
         }));
     };
-    
+
     self.removeWebsite = function(profileWebsite) {
         var profileWebsites = ko.toJS(self.profileWebsites());
             bootbox.confirm({
@@ -629,7 +648,6 @@ $.extend(SocialViewModel.prototype, SerializeMixin.prototype, TrackedMixin.proto
 
 SocialViewModel.prototype.serialize = function() {
     var serializedData = ko.toJS(this);
-    debugger;
     var profileWebsites = serializedData.profileWebsites;
     serializedData.profileWebsites = profileWebsites.filter(
         function (value) {
@@ -642,7 +660,6 @@ SocialViewModel.prototype.serialize = function() {
 SocialViewModel.prototype.unserialize = function(data) {
     var self = this;
     var websiteValue = [];
-    debugger;
     $.each(data || {}, function(key, value) {
         if (ko.isObservable(self[key]) && key === 'profileWebsites') {
             if (value && value.length === 0) {
@@ -709,6 +726,9 @@ var ListViewModel = function(ContentModel, urls, modes) {
     * */
     self.dirty = function() {
         // if the length of the list has changed
+        if (self.originalItems === undefined) {
+            return false;
+        }
         if (self.originalItems.length !== self.contents().length) {
             return true;
         }
@@ -803,7 +823,7 @@ ListViewModel.prototype.removeContent = function(content) {
 
 ListViewModel.prototype.unserialize = function(data) {
     var self = this;
-    if(self.editAllowed) {
+    if (self.editAllowed) {
         self.editable(data.editable);
     } else {
         self.editable(false);
@@ -813,8 +833,10 @@ ListViewModel.prototype.unserialize = function(data) {
     }));
 
     // Ensure at least one item is visible
-    if (self.contents().length === 0) {
-        self.addContent();
+    if (self.mode() === 'edit') {
+        if (self.contents().length === 0) {
+            self.addContent();
+        }
     }
 
     self.setOriginal();
@@ -858,6 +880,18 @@ var JobViewModel = function() {
         }
     });
 
+    self.expandable = ko.computed(function() {
+        return self.department().length > 1 ||
+                self.title().length > 1 ||
+                self.startYear() !== null;
+    });
+
+    self.expanded = ko.observable(false);
+
+    self.toggle = function() {
+        self.expanded(!self.expanded());
+    };
+
     self.trackedProperties = [
         self.institution,
         self.department,
@@ -878,6 +912,7 @@ var JobViewModel = function() {
     self.isValid = ko.computed(function() {
         return validated.isValid();
     });
+
 };
 $.extend(JobViewModel.prototype, DateMixin.prototype, TrackedMixin.prototype);
 
@@ -899,6 +934,18 @@ var SchoolViewModel = function() {
         }
     });
 
+    self.expandable = ko.computed(function() {
+        return self.department().length > 1 ||
+                self.degree().length > 1 ||
+                self.startYear() !== null;
+    });
+
+    self.expanded = ko.observable(false);
+
+    self.toggle = function() {
+        self.expanded(!self.expanded());
+    };
+
     self.trackedProperties = [
         self.institution,
         self.department,
@@ -919,6 +966,7 @@ var SchoolViewModel = function() {
     self.isValid = ko.computed(function() {
         return validated.isValid();
     });
+
 };
 $.extend(SchoolViewModel.prototype, DateMixin.prototype, TrackedMixin.prototype);
 
@@ -970,3 +1018,4 @@ module.exports = {
     // Expose private viewmodels
     _NameViewModel: NameViewModel
 };
+
