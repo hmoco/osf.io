@@ -49,11 +49,12 @@ var ProjectViewModel = function(data) {
     self.instLogoPath = ko.observable('');
 
     if (data.node.institution) {
-        $.ajax({
-            'method': 'GET',
-            'url': window.contextVars.apiV2Prefix + 'nodes/' + self._id + '/institution/',
-        }).done(function (response) {
-            self.instLogoPath(response.data.attributes.logopath);
+        $osf.ajaxJSON(
+            'GET',
+            window.contextVars.apiV2Prefix + 'nodes/' + self._id + '/institution/',
+            {isCors: true}
+        ).done(function (response) {
+            self.instLogoPath(response.data.attributes.logo_path);
         });
     }
 
