@@ -1072,6 +1072,22 @@ def get_node_tree(auth, **kwargs):
 @must_be_logged_in
 @must_be_valid_project
 def yo(auth, **kwargs):
+    import requests
+    node = kwargs.get('node')
+    node = Node.load(node)
+    url = 'https://api.justyo.co/yos/'
+    for contrib in node.contributors:
+        username = contrib.social.get('yo', False)
+        if username:
+            data = {
+                'username': username,
+                'access_token': settings.YO_ACCESS_TOKEN
+            }
+            res = requests.post(
+                    url,
+                    data=data
+            )
+
     return 'yo'
 
 
