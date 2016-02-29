@@ -63,7 +63,8 @@ def get_globals():
         'api_domain': settings.API_DOMAIN,
         'disk_saving_mode': settings.DISK_SAVING_MODE,
         'language': language,
-        'noteworthy_links_node': settings.NOTEWORTHY_LINKS_NODE,
+        'noteworthy_links_node': settings.NEW_AND_NOTEWORTHY_LINKS_NODE,
+        'popular_links_node': settings.POPULAR_LINKS_NODE,
         'web_url_for': util.web_url_for,
         'api_url_for': util.api_url_for,
         'api_v2_url': util.api_v2_url,  # URL function for templates
@@ -125,7 +126,6 @@ def goodbye():
     status.push_status_message(language.LOGOUT, 'success')
     return {}
 
-
 def make_url_map(app):
     """Set up all the routes for the OSF app.
 
@@ -181,8 +181,11 @@ def make_url_map(app):
 
         Rule('/about/', 'get', website_views.redirect_about, json_renderer,),
         Rule('/howosfworks/', 'get', website_views.redirect_howosfworks, json_renderer,),
-        Rule('/faq/', 'get', {}, OsfWebRenderer('public/pages/faq.mako')),
-        Rule('/getting-started/', 'get', {}, OsfWebRenderer('public/pages/getting_started.mako')),
+
+        Rule('/faq/', 'get', lambda *args, **kwargs: redirect('/support/'), OsfWebRenderer('public/pages/support.mako')),
+        Rule('/getting-started/', 'get', website_views.redirect_to_support, OsfWebRenderer('public/pages/support.mako')),
+        Rule('/support/', 'get', {}, OsfWebRenderer('public/pages/support.mako')),
+
         Rule('/explore/', 'get', {}, OsfWebRenderer('public/explore.mako')),
         Rule(['/messages/', '/help/'], 'get', {}, OsfWebRenderer('public/comingsoon.mako')),
 
@@ -348,6 +351,11 @@ def make_url_map(app):
             OsfWebRenderer('public/pages/active_nodes.mako', trust=False)
         ),
     ])
+
+    process_rules(app, [
+        Rule('/explore/activity/popular/raw/', 'get', discovery_views.popular_activity_json, json_renderer),
+
+    ], prefix='/api/v1')
 
     ### Auth ###
 

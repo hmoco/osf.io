@@ -1,17 +1,9 @@
 <%inherit file="base.mako"/>
 <%def name="title()">Home</%def>
 <%def name="content()">
-    <h2> Placeholder </h2>
-    <h3> Recent Activity </h3>
-    <p class="text-muted">Latest activities on your projects adjustable by date and category <p>
-    <div id="recentActivityWidget">
-        <div class="spinner-loading-wrapper">
-            <div class="logo-spin logo-xl"></div>
-            <p class="m-t-sm fg-load-message">
-                Loading Recent Activity...
-            </p>
-        </div>
-    </div>
+
+    <div id="osfHome"></div>
+
 </%def>
 
 <%def name="stylesheets()">
@@ -22,5 +14,8 @@
 
 <%def name="javascript_bottom()">
     ${parent.javascript_bottom()}
-    <script src="${"/static/public/js/home.js" | webpack_asset}"></script>
+    <script src=${"/static/public/js/home-page.js" | webpack_asset}></script>
 </%def>
+
+
+
