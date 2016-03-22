@@ -43,8 +43,15 @@ function _formatDataforPO(item) {
     item.contributors = '';
     if (item.embeds.contributors.data){
         item.embeds.contributors.data.forEach(function(c){
-            var attr = c.embeds.users.data.attributes;
+            var attr;
+            if (c.embeds.users.data) {
+                attr = c.embeds.users.data.attributes;
+            }
+            else {
+                attr = c.embeds.users.errors[0].meta;
+            }
             item.contributors += attr.full_name + ' ' + attr.middle_names + ' ' + attr.given_name + ' ' + attr.family_name + ' ' ;
+
         });
     }
     item.date = new $osf.FormattableDate(item.attributes.date_modified);
@@ -452,6 +459,7 @@ var MyProjects = {
                 self.loadingNodePages = false;
                 self.loadingAllNodes = false;
             }
+            m.redraw();
         };
         self.reloadOnClick = function (item) {
             self.updateFilter(item);
@@ -466,6 +474,7 @@ var MyProjects = {
                 },' Reload \'All my projects\''))
             ]));
             self.data([]);
+            m.redraw();
             throw new Error('Receiving initial data for File Browser failed. Please check your url');
         };
         self.generateFiltersList = function _generateFilterList () {
@@ -513,7 +522,9 @@ var MyProjects = {
             self.nameFilters = [];
             for (var user in self.users){
                 var u2 = self.users[user];
-                self.nameFilters.push(new LinkObject('name', { id : u2.data.id, count : u2.count, query : { 'related_counts' : 'children' }}, u2.data.embeds.users.data.attributes.full_name, options.institutionId || false));
+                if (u2.data.embeds.users.data) {
+                    self.nameFilters.push(new LinkObject('name', { id : u2.data.id, count : u2.count, query : { 'related_counts' : 'children' }}, u2.data.embeds.users.data.attributes.full_name, options.institutionId || false));
+                }
             }
             // order names
             self.nameFilters.sort(sortByCountDesc);
@@ -675,6 +686,27 @@ var MyProjects = {
             ctrl.projectOrganizerOptions
         );
         return [
+            m('.dashboard-header', m('.row', [
+                m('.col-xs-8', m('h3', [
+                    'My Projects ',
+                    m('small.hidden-xs', 'Browse and organize all your projects')
+                ])),
+                m('.col-xs-4.p-sm', m('.pull-right', m.component(AddProject, {
+                    buttonTemplate: m('.btn.btn-success[data-toggle="modal"][data-target="#addProject"]', {onclick: function() {
+                        $osf.trackClick('myProjects', 'add-project', 'open-add-project' + '-modal');
+                    }}, 'Create Project'),
+                    parentID: null,
+                    modalID: 'addProject',
+                    title: 'Create new project',
+                    categoryList: ctrl.categoryList,
+                    stayCallback: function () {
+                        ctrl.allProjectsLoaded(false);
+                        ctrl.updateList(ctrl.breadcrumbs()[ctrl.breadcrumbs().length - 1]);
+                    },
+                    trackingCategory: 'myProjects',
+                    trackingAction: 'add-project'
+                })))
+            ])),
             m('.db-header.row', [
                 m('.col-xs-12.col-sm-8.col-lg-9', m.component(Breadcrumbs,ctrl)),
                 m('.db-buttonRow.col-xs-12.col-sm-4.col-lg-3', [
@@ -1528,11 +1560,18 @@ var ActivityLogs = {
             args.activityLogs() ? args.activityLogs().map(function(item){
                 item.trackingCategory = 'myProjects';
                 item.trackingAction = 'information-panel';
+                var image = m('i.fa.fa-question');
+                if (item.embeds.user.data) {
+                    image = m('img', { src : item.embeds.user.data.links.profile_image});
+                }
+                else if (item.embeds.user.errors){
+                    image = m('img', { src : item.embeds.user.errors[0].meta.profile_image});
+                }
                 return m('.db-activity-item', [
-                    m('', [ m('.db-log-avatar.m-r-xs', m('img', { src : item.embeds.user.data.links.profile_image})),
-                        m.component(LogText, item)]),
-                    m('.text-right', m('span.text-muted.m-r-xs', item.attributes.formattableDate.local))
-                ]);
+                m('', [ m('.db-log-avatar.m-r-xs', image),
+                    m.component(LogText, item)]),
+                m('.text-right', m('span.text-muted.m-r-xs', item.attributes.formattableDate.local))]);
+
             }) : '',
             m('.db-activity-nav.text-center', [
                 args.showMoreActivityLogs() ? m('.btn.btn-sm.btn-link', { onclick: function(){
