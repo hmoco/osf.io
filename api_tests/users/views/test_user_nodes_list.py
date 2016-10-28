@@ -109,20 +109,15 @@ class TestUserNodesPreprintsFiltering(ApiTestCase):
         
         self.no_preprints_node = ProjectFactory(creator=self.user)
         self.valid_preprint_node = ProjectFactory(creator=self.user)
-        self.orphaned_preprint_node = ProjectFactory(creator=self.user)
         self.abandoned_preprint_node = ProjectFactory(creator=self.user)
 
         self.valid_preprint = PreprintFactory(project=self.valid_preprint_node)
         self.abandoned_preprint = PreprintFactory(project=self.abandoned_preprint_node, is_published=False)
-        self.orphaned_preprint = PreprintFactory(project=self.orphaned_preprint_node)
-        self.orphaned_preprint.node.preprint_file.wrapped().delete()
-        self.orphaned_preprint.node._is_preprint_orphan = True
-        self.orphaned_preprint.node.save()
 
         self.url_base = '/{}users/me/nodes/?filter[preprint]='.format(API_BASE)
 
     def test_filter_false(self):
-        expected_ids = [self.abandoned_preprint_node._id, self.no_preprints_node._id, self.orphaned_preprint_node._id]
+        expected_ids = [self.abandoned_preprint_node._id, self.no_preprints_node._id]
         res = self.app.get('{}false'.format(self.url_base), auth=self.user.auth)
         actual_ids = [n['id'] for n in res.json['data']]
 
