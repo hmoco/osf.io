@@ -108,14 +108,15 @@ class OsfStorageFileNode(FileNode):
         return self.checkout is not None
 
     def delete(self, user=None, parent=None):
-        if self.node.preprint_file == self:
-            self.node._is_preprint_orphan = True
-            self.node.save()
+        if self.node.preprint_file == self and not self.node._has_abandoned_preprint:
+            raise exceptions.FileNodeIsPrimaryFile()
         if self.is_checked_out:
             raise exceptions.FileNodeCheckedOutError()
         return super(OsfStorageFileNode, self).delete(user=user, parent=parent)
 
     def move_under(self, destination_parent, name=None):
+        if self.node.preprint_file == self and not self.node._has_abandoned_preprint:
+            raise exceptions.FileNodeIsPrimaryFile()
         if self.is_checked_out:
             raise exceptions.FileNodeCheckedOutError()
         return super(OsfStorageFileNode, self).move_under(destination_parent, name)
