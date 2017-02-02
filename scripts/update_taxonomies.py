@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
 
-def update_taxonomies(filename, warn=True):
+def update_taxonomies(filename):
     # Flat taxonomy is stored locally, read in here
     with open(
         os.path.join(
@@ -41,47 +41,43 @@ def update_taxonomies(filename, warn=True):
 
             try:
                 subject = Subject.find_one(Q('text', 'eq', text))
-                if warn:
-                    logger.info('Found existing Subject "{}":{}{}'.format(
-                        subject.text,
-                        subject._id,
-                        u' with parent {}:{}'.format(parent.text, parent._id) if parent else ''
-                    ))
+                logger.info('Found existing Subject "{}":{}{}'.format(
+                    subject.text,
+                    subject._id,
+                    u' with parent {}:{}'.format(parent.text, parent._id) if parent else ''
+                ))
             except (NoResultsFound):
                 # If subject does not yet exist, create it
                 subject = Subject(
                     text=text,
                     parents=[parent] if parent else [],
                 )
-                if warn:
-                    logger.info(u'Creating Subject "{}":{}{}'.format(
-                        subject.text,
-                        subject._id,
-                        u' with parent {}:{}'.format(parent.text, parent._id) if parent else ''
-                    ))
+                logger.info(u'Creating Subject "{}":{}{}'.format(
+                    subject.text,
+                    subject._id,
+                    u' with parent {}:{}'.format(parent.text, parent._id) if parent else ''
+                ))
             else:
                 # If subject does exist, append parent_id if not already added
                 if parent and parent not in subject.parents:
                     subject.parents.append(parent)
-                    if warn:
-                        logger.info(u'Adding parent "{}":{} to Subject "{}":{}'.format(
-                            parent.text, parent._id,
-                            subject.text, subject._id
-                        ))
+                    logger.info(u'Adding parent "{}":{} to Subject "{}":{}'.format(
+                        parent.text, parent._id,
+                        subject.text, subject._id
+                    ))
 
             subject.save()
 
-def main(warn=True):
+def main():
     dry_run = '--dry' in sys.argv
     if not dry_run:
         script_utils.add_file_logger(logger, __file__)
     set_up_storage([Subject], storage.MongoStorage)
     with TokuTransaction():
-        update_taxonomies('bepress_taxonomy.json', warn)
+        update_taxonomies('bepress_taxonomy.json')
         # Now that all subjects have been added to the db, compute and set
         # the 'children' field for every subject
-        if warn:
-            logger.info('Setting "children" field for each Subject')
+        logger.info('Setting "children" field for each Subject')
         for subject in Subject.find():
             subject.children = Subject.find(Q('parents', 'eq', subject))
             subject.save()
