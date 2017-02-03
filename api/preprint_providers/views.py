@@ -34,6 +34,7 @@ class PreprintProviderList(JSONAPIBaseView, generics.ListAPIView, ODMFilterMixin
         logo_path      string             a path to the preprint provider's static logo
         banner_path    string             a path to the preprint provider's banner
         description    string             description of the preprint provider
+        blog           string             link to the preprint provider's blog
 
     ##Relationships
 
@@ -88,6 +89,7 @@ class PreprintProviderDetail(JSONAPIBaseView, generics.RetrieveAPIView):
         logo_path      string             a path to the preprint provider's static logo
         banner_path    string             a path to the preprint provider's banner
         description    string             description of the preprint provider
+        blog           string             link to the preprint provider's blog
 
     ##Relationships
 
