@@ -116,6 +116,7 @@ def main():
             'social_twitter': 'engrxiv',
             'social_facebook': 'engrXiv',
             'social_instagram': 'engrxiv',
+            'blog_url': 'http://blog.engrxiv.org/',
             'licenses_acceptable': ['CC0 1.0 Universal', 'CC-By Attribution 4.0 International', 'No license'],
             'header_text': '',
             'subjects_acceptable': [
@@ -261,6 +262,7 @@ def main():
             'social_twitter': 'psyarxiv',
             'social_facebook': 'PsyArXiv',
             'social_instagram': 'psyarxiv',
+            'blog_url': 'http://blog.psyarxiv.com/psyarxiv/',
             'licenses_acceptable': ['CC0 1.0 Universal', 'CC-By Attribution 4.0 International', 'No license'],
             'header_text': '',
             'subjects_acceptable': [
@@ -347,6 +349,7 @@ def main():
             'social_twitter': 'socarxiv',
             'social_facebook': 'socarxiv',
             'social_instagram': 'socarxiv',
+            'blog_url': 'http://socopen.org/',
             'licenses_acceptable': ['CC0 1.0 Universal', 'CC-By Attribution 4.0 International', 'No license'],
             'header_text': '',
             'subjects_acceptable': [
