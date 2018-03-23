@@ -53,9 +53,9 @@ services:
 #    volumes:
 #      - mfr-sync:/code:nocopy
 
-#  ember_osf_web:
-#    volumes:
-#      - ember_osf_web-sync:/code:nocopy
+  ember_osf_web:
+    volumes:
+      - ember_osf_web-sync:/code:nocopy
 #
 ##      # Use this for ember-osf linked development (with docker-sync):
 ##      - ember_osf_web_dist_vol:/code/dist
@@ -188,8 +188,8 @@ volumes:
 #  emberosf-sync:
 #    external: true
 
-#  ember_osf_web-sync:
-#    external: true
+  ember_osf_web-sync:
+    external: true
 
 #  preprints-sync:
 #    external: true
